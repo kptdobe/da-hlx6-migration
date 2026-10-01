@@ -34,20 +34,48 @@ Source projects: `kptdobe/sample-content-da` (R2 `aem-content`) and `kptdobe/sam
 - [ ] an unsupported extension (e.g. `.txt`, `.xml`)
 - [ ] a moved doc, a renamed doc, a deleted doc and a deleted folder
 
-## Findings
-_To be generated in Phase 3._
+## Tooling
+```bash
+node bin/dump.js -b da   kptdobe/sample-content-da     # -> analysis/da/...
+node bin/dump.js -b hlx6 kptdobe/sample-content-hlx6   # -> analysis/hlx6/...
+node bin/compare.js -o analysis/report.json analysis/da/kptdobe/sample-content-da analysis/hlx6/kptdobe/sample-content-hlx6
+node bin/preflight.js -v --dump analysis/da/kptdobe/sample-content-da
+```
+
+## Findings (run of 2026-10-01)
+
+Object counts:
+
+| kind | da | hlx6 |
+|---|---|---|
+| doc | 4 | 4 |
+| sheet | 1 | 1 |
+| media | 3 | 3 |
+| folder | 3 | 3 |
+| version | 8 | 10 |
+| audit | 6 | 0 |
+| trash | 1 | 1 |
+
+The sample sets differ only by user actions: `frescopa-logo-1.svg` vs `frescopa-logo.svg`, and the different delete histories.
 
 | # | Dimension | da | hlx6 | Transformation | Lossy? |
 |---|---|---|---|---|---|
-| 1 | Key / path layout | | | | |
-| 2 | Documents (.html) | | | | |
-| 3 | Sheets (.json) | | | | |
-| 4 | Media / binaries | | | | |
-| 5 | Folders | | | | |
-| 6 | Object metadata | | | | |
-| 7 | Versions | | | | |
-| 8 | Audit log | | | | |
-| 9 | Object identity / IDs | | | | |
-| 10 | Delete / move / trash | | | | |
+| 1 | Key / path layout | `{org}/{site}/{path}` | identical for UI-created names | none for sanitized names; `toHlx6Path` otherwise | no |
+| 2 | Documents (.html) | raw, `text/html`; e.g. `<main><div><p>…</p></div></main>` on one line | **gzip**; **re-serialized** by hlx6 (pretty-printed, so the uncompressed size differs: 110 → 114 bytes) | Bodies are equal after whitespace normalization. Write as-is (hlx6 accepts it) or reformat | no |
+| 2b | Images in HTML | External URLs kept (e.g. `raw.githubusercontent.com/...`) | **Interned** into the media bus and rewritten to `https://main--{site}--{org}.aem.page/media_{hash}...` | Intern every non-allowed image URL into `helix-media-bus`, then rewrite the `src`/`srcset` | no (needs fetch) |
+| 3 | Sheets (.json) | raw | gzip, **byte-identical** after gunzip | gzip | no |
+| 4 | Media / binaries | raw, stored in the site tree | **gzip as well** (even jpg/png), byte-identical after gunzip | gzip | no |
+| 5 | Folders | `{folder}.props` (body `{}`, no metadata) | `{folder}/.props` (body `{}` gzipped, with `doc-id`, `last-modified-by`, `uncompressed-length`) | move the marker + generate metadata | no |
+| 6 | Object metadata | doc/sheet: `id, path, preparsingstore, timestamp, users, version`; media: `id, path, timestamp, users` | all kinds: `doc-id, last-modified-by, uncompressed-length` | `doc-id` ← new ULID; `last-modified-by` ← `users[0].email`; the original `timestamp` has no slot | **yes**: `LastModified` = migration time |
+| 7 | Versions | `.da-versions/{id}/{uuid}.{ext}` + metadata `label, path, timestamp, users`; html/json only | `.versions/{doc-id}/{ulid}` + `doc-path-hint, doc-last-modified, doc-last-modified-by, version-by, version-comment[, version-operation]` | `version-comment` ← `label` (same values: Previewed / Published); `doc-last-modified` ← ISO(`timestamp`); `version-by` ← user of the audit line; ULID seeded with the audit event time | **yes**: version date = `LastModified` (migration time) |
+| 7b | Version semantics | Snapshot labelled by the da-live preview/publish actions | Same (Previewed/Published), plus automatic `delete` versions | 1:1 | no |
+| 8 | Audit log | `audit.txt` TSV, one line per edit session (30 min collapse) and one per labelled version | **none** | Lines with a versionId give the version date and author; other lines have no target | **yes** (edit-only events) |
+| 9 | Object identity | `id` UUID | `doc-id` ULID (also on folders and media) | new ULID per object; keep `id` → `doc-id` in the migration manifest | no |
+| 10 | Delete / trash | **da-live** moves the item client-side to `/.trash/{name}-{iso-date}.{ext}`; `id` is kept, so versions remain attached | **API** soft delete: `delete` version, then move to `/.trash/{name}`. Emptying the trash removes the trash object; versions stay as orphans | `.trash/x-<date>.html` → `.trash/x-<date>.html` (keep the name to avoid collisions) | no |
+| 10b | Trash metadata | `path` keeps the original path | Observed **no `doc-path`** on the trashed object, although the code sets it. To investigate | - | - |
 | 11 | Comments | `.da/comments/{id}/*.json` | not supported | deferred, detected by pre-flight | yes |
-| 12 | Config / ACL | | | | |
+| 12 | Config / ACL | KV `DA_CONFIG` | helix config | out of scope of the source bus | - |
+
+### Open items from the run
+- 10b: why the trashed hlx6 object has no `doc-path` metadata (expected from `trashSource`).
+- Version body: da stores the body *at label time*, same as hlx6 (copy of the current object). Bodies to be compared once the samples have identical histories.

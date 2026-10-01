@@ -22,7 +22,7 @@ Everything in this document must be confirmed on real data in Phase 3 (see [03](
 
 | Aspect | da | hlx6 |
 |---|---|---|
-| Body encoding | Raw | **gzip** (`ContentEncoding: gzip`) by default in `Bucket.put(..., compress=true)` |
+| Body encoding | Raw | **gzip** (`ContentEncoding: gzip`) for **every** type, including images (confirmed in Phase 3) |
 | Content-Type | From the request (`type`) | From the extension |
 | Metadata | `id` (UUID), `version` (UUID, html/json only), `users` (JSON array of `{email}`), `timestamp` (epoch ms string), `path` (`site/path`), `preparsingstore` | `doc-id` (**ULID**), `last-modified-by` (email or `anonymous`), `uncompressed-length` |
 | Last modified | `timestamp` metadata **and** S3 LastModified | **S3 `LastModified` only**, which is not settable by a writer |
@@ -47,7 +47,7 @@ Everything in this document must be confirmed on real data in Phase 3 (see [03](
 
 | Op | da | hlx6 |
 |---|---|---|
-| Delete | **Hard delete**. Versions and audit under `.da-versions/{id}` stay orphaned. Sends a `deleteadmin` notification to da-collab for `.html` | **Soft delete**. The object gets a version (`operation=delete`), then is moved to `{org}/{site}/.trash/{name}` (or `.trash/{folder}/...`) with metadata `doc-path`. Name collisions get a `-{base36 ts}` suffix. Deleting inside `.trash` is a hard delete; versions are kept |
+| Delete | **da-admin: hard delete**. But **da-live never hard-deletes**: it moves the item to `/.trash/{name}-{iso-date}.{ext}` (client-side, `da-list.js`), so `id` and versions stay attached. A hard delete only happens from inside `.trash` | **Soft delete**. The object gets a version (`operation=delete`), then is moved to `{org}/{site}/.trash/{name}` (or `.trash/{folder}/...`) with metadata `doc-path`. Name collisions get a `-{base36 ts}` suffix. Deleting inside `.trash` is a hard delete; versions are kept |
 | Move | Copy + delete; `id` is kept | Copy (keeps `doc-id`) + remove |
 | Copy | New `id`, new version and a new audit entry | New `doc-id` (ULID) |
 

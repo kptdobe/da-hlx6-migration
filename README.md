@@ -20,3 +20,17 @@ to the **hlx6** backend (helix-api-service, AWS S3 "source bus").
 ## Reference projects
 - da: https://da.live/#/kptdobe/sample-content-da
 - hlx6: https://da.live/#/kptdobe/sample-content-hlx6
+
+## Usage (all read-only)
+Credentials:
+- da (R2): a `.dev.vars` file at the repo root (`S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_DEF_URL`), or pass `--dev-vars`
+- hlx6 (S3): the default AWS credential chain
+
+```bash
+npm install
+node bin/dump.js -b da   <org/site>             # download a site to analysis/da/<org>/<site>
+node bin/dump.js -b hlx6 <org/site>             # download a site to analysis/hlx6/<org>/<site>
+node bin/compare.js <da-dump> <hlx6-dump>       # structural diff
+node bin/preflight.js -v <org/site>             # migration blockers for a da site
+npm test && npm run lint
+```

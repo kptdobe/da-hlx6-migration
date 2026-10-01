@@ -3,3 +3,4 @@ analysis/
 .ref/
 .env
 *.log
+.dev.vars

@@ -14,10 +14,10 @@ No migration code is written before the migration rules (04) and the architectur
 ## Phases
 | # | Phase | Deliverable | Status |
 |---|---|---|---|
-| 0 | Access & tooling inventory | [01-access-and-tooling.md](01-access-and-tooling.md) | in progress |
+| 0 | Access & tooling inventory | [01-access-and-tooling.md](01-access-and-tooling.md) | **done** |
 | 1 | Storage model from source code | [02-storage-model.md](02-storage-model.md) | **done (v1)** |
-| 2 | Read-only tooling: list/head/get on R2 and S3, plus dump | `src/`, `bin/` | todo |
-| 3 | Dump both sample projects and diff them | [03-content-structure-differences.md](03-content-structure-differences.md) | todo |
+| 2 | Read-only tooling: list/head/get on R2 and S3, plus dump | `src/`, `bin/` | **done** |
+| 3 | Dump both sample projects and diff them | [03-content-structure-differences.md](03-content-structure-differences.md) | **done (v1)** |
 | 4 | Migration rules | [04-migration-rules.md](04-migration-rules.md) | draft |
 | 5 | Architecture ADR | [05-architecture.md](05-architecture.md) | draft |
 | 6 | Migration engine | code + tests | later |

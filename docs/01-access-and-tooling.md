@@ -16,7 +16,7 @@
 | Source bucket | `bucketMap.source`; defaults to **`helix-source-bus`** unless `HELIX_BUCKET_NAMES` (JSON) overrides it | shared-storage `parseBucketNames()` |
 | Media bucket | `bucketMap.media` → `helix-media-bus` | `storage.mediaBus()` |
 | R2 mirror | `sourceBus(disableR2 = true)` → **no R2 mirror** for source; S3 only | shared-storage `storage.js` |
-| Credentials | AWS profile or role: **TBD** (read + write on `helix-source-bus`, read + write on `helix-media-bus`) | - |
+| Credentials | AWS KLAM role, account `118435662149`, region `us-east-1`, from `~/.aws/credentials` (temporary, refresh when expired). Read on `helix-source-bus` verified | - |
 | API | `https://api.aem.live/{org}/sites/{site}/source/...` | helix-api-service `src/index.js` |
 | Site is hlx6? | `GET {HLX_ADMIN}/ping/{org}/{site}` returns the `x-api-upgrade-available` header | da-nx `nx2/utils/api.js` `isHlx6()` |
 
@@ -32,4 +32,4 @@ The prod bucket names must be confirmed from the deployed `HELIX_BUCKET_NAMES`.
 | `encoding/*` | gzip detection and fixing | Reference only: hlx6 stores gzip bodies |
 
 ## Gate before Phase 3
-Read-only access to `aem-content/kptdobe/sample-content-da/` and `helix-source-bus/kptdobe/sample-content-hlx6/` must be verified.
+Read-only access verified on both sides (2026-10-01). R2 credentials: `.dev.vars` at the repo root (git-ignored, symlink to da-magic's) or `--dev-vars` / `$DA_DEV_VARS`.
