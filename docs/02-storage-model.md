@@ -63,7 +63,7 @@ Everything in this document must be confirmed on real data in Phase 3 (see [03](
 | Aspect | da | hlx6 |
 |---|---|---|
 | Org and site config, ACL | Cloudflare KV `DA_CONFIG` | helix config service / `configBus` (**TBD**, out of the source bus) |
-| Comments | `.da/comments/{docId}` via `/source` | **TBD**. Path depends on the backend da-live calls for hlx6 sites |
+| Comments | `{org}/{site}/.da/comments/{docId}/{commentId}.json`, keyed by the da doc `id` (read from the `x-da-id` header). da-live feature since 2026-09-10 (#1073) | **Not supported**. hlx6 returns no `x-da-id` header, so da-live disables comments (`editor-comments.js`). Needs: doc-id exposed by the API plus a comments store; then re-key from da `id` to hlx6 `doc-id` |
 | Yjs / collab state | Not persisted in R2 (da-collab is in-memory + R2 doc) | N/A |
 
 ## 7. Side effects of API writes (Q3: does a direct S3 write skip anything?)

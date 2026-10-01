@@ -24,7 +24,6 @@ Source projects: `kptdobe/sample-content-da` (R2 `aem-content`) and `kptdobe/sam
 - [ ] Deleted docs: da hard delete vs hlx6 `.trash/` + version
 - [ ] Moved/renamed docs: id/doc-id preserved?
 - [ ] Names with uppercase, space, `_`, unicode: resulting keys on each side
-- [ ] Comments (`.da/comments/...`) location on hlx6
 
 ## Edge cases the samples must contain
 - [ ] nested folders; names with spaces, unicode, `_` and uppercase letters
@@ -34,7 +33,6 @@ Source projects: `kptdobe/sample-content-da` (R2 `aem-content`) and `kptdobe/sam
 - [ ] an image pasted in a doc, a PDF, an SVG, an MP4 and a large binary (> 4.5 MB)
 - [ ] an unsupported extension (e.g. `.txt`, `.xml`)
 - [ ] a moved doc, a renamed doc, a deleted doc and a deleted folder
-- [ ] a document with comments
 
 ## Findings
 _To be generated in Phase 3._
@@ -51,5 +49,5 @@ _To be generated in Phase 3._
 | 8 | Audit log | | | | |
 | 9 | Object identity / IDs | | | | |
 | 10 | Delete / move / trash | | | | |
-| 11 | Comments | | | | |
+| 11 | Comments | `.da/comments/{id}/*.json` | not supported | deferred, detected by pre-flight | yes |
 | 12 | Config / ACL | | | | |

@@ -10,8 +10,19 @@
 | `.da-versions/{id}/{vid}.{ext}` | `.versions/{doc-id}/{ULID(seed = version timestamp)}` | gzip | `doc-path-hint`, `doc-last-modified` (ISO of da `timestamp`), `doc-last-modified-by`, `version-by`, `version-comment` = da `label`, `doc-id` | transform |
 | `.da-versions/{id}/audit*.txt` | **TBD**: drop / sidecar / synthesize versions | - | - | decision needed |
 | Versions of hard-deleted docs | `.trash/{name}` (last version as body) + `.versions/{doc-id}/...` | | `doc-path` = original path | generate (decision needed) |
-| `.da/comments/...` | TBD | | | TBD |
+| `.da/comments/{da-id}/{cid}.json` | not migrated (deferred, open question 7) | - | - | **detect & report** |
 | `content.da.live` images | `helix-media-bus` `media_{hash}` + URL rewrite to `./media_{hash}.{ext}` | | media bus metadata as written by `@adobe/helix-mediahandler` | generate |
+
+## Pre-flight checks
+Run before any write. Every check reports the counts and the affected keys. A **blocking** check stops the migration unless it is explicitly acknowledged.
+
+| Check | Severity |
+|---|---|
+| `.da/comments/` objects present (comments are not migrated) | blocking |
+| Unsupported extensions | blocking |
+| Path sanitization collisions | blocking |
+| Keys not in sanitized form (renamed on hlx6) | warning |
+| Orphaned `.da-versions/{id}` (doc hard-deleted) | warning |
 
 ## Invariants
 - The mapping is deterministic, so re-runs are idempotent: `doc-id` is derived from the da `id` plus its timestamp seed, and the version ULID from the da version id plus its timestamp.
