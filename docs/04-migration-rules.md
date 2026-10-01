@@ -1,20 +1,82 @@
-# 04 - Migration rules (draft, based on 02; validated by 03)
+# 04 - Migration rules (v1, for review)
 
-| Object type (da) | Target key (hlx6) | Body | Metadata | Category |
-|---|---|---|---|---|
-| `{o}/{s}/{p}.html` | `{o}/{s}/{sanitize(p)}.html` | Rewrite image URLs (see Media); gzip | `doc-id` = ULID(seed = da `timestamp`), `last-modified-by` = first of da `users`, `uncompressed-length`, `x-da-id` = da `id` (traceability) | transform |
-| `{o}/{s}/{p}.json` | same rule | gzip | as above | copy + rewrite metadata |
-| `{o}/{s}/{p}.{allowed binary}` | same rule | gzip (as the API does) | as above | copy + rewrite metadata |
-| `{o}/{s}/{p}.{other ext}` | - | - | - | **report, not migrated** (decision needed) |
-| `{o}/{s}/{f}.props` | `{o}/{s}/{f}/.props` (body `{}`) | `{}` | `doc-id` | generate |
-| `.da-versions/{id}/{vid}.{ext}` | `.versions/{doc-id}/{ULID(seed = version timestamp)}` | gzip | `doc-path-hint`, `doc-last-modified` (ISO of da `timestamp`), `doc-last-modified-by`, `version-by`, `version-comment` = da `label`, `doc-id` | transform |
-| `.da-versions/{id}/audit*.txt` | **TBD**: drop / sidecar / synthesize versions | - | - | decision needed |
-| Versions of hard-deleted docs | `.trash/{name}` (last version as body) + `.versions/{doc-id}/...` | | `doc-path` = original path | generate (decision needed) |
-| `.da/comments/{da-id}/{cid}.json` | not migrated (deferred, open question 7) | - | - | **detect & report** |
-| `content.da.live` images | `helix-media-bus` `media_{hash}` + URL rewrite to `./media_{hash}.{ext}` | | media bus metadata as written by `@adobe/helix-mediahandler` | generate |
+Based on [02](02-storage-model.md) (code) and [03](03-content-structure-differences.md) (sample data).
+Notation: `{o}/{s}` = `{org}/{site}`; `sitePath(p)` = da `path` metadata without its leading `{site}/`.
 
-## Pre-flight checks
-Run before any write. Every check reports the counts and the affected keys. A **blocking** check stops the migration unless it is explicitly acknowledged.
+## 1. Dates: why they differ, and what we can do
+
+Re-creating everything from scratch does **not** let us set the dates, because hlx6 does not store dates in metadata. It reads the **S3 system `LastModified`**, which S3 sets to the time of the write and does not let any client override (neither `PutObject` nor `CopyObject`).
+
+| Date shown | Where hlx6 reads it | Settable by migration? |
+|---|---|---|
+| Document `Last-Modified` (GET/HEAD) | S3 `LastModified` of the object (`source-client.js` `getFileHeaders`) | **no** |
+| Folder listing `last-modified` | S3 `LastModified` from `ListObjectsV2` (`folder.js`) | **no** |
+| Version date (`version-date`, shown by da-live) | S3 `LastModified` of the version object (`versions.js`) | **no** |
+| Version `doc-last-modified` / `doc-last-modified-by` | user metadata | **yes** |
+| Version ordering | ULID of the version key, sorted by name | **yes** (ULIDs seeded with the original time) |
+
+Consequences:
+- **Order** is preserved: version ULIDs are generated from the original timestamps.
+- **Dates** on hlx6 show the migration time until hlx6 supports an override.
+
+Proposed hlx6 change, to be raised once the rules are reviewed: honor an optional user metadata date, falling back to `LastModified`:
+- `last-modified` on current objects, for GET/HEAD
+- `version-date` on version objects, for the versions list
+
+The folder listing can't use it without a HEAD per item; that is acceptable or can be solved separately.
+The migration writes these metadata keys **now**, so no second pass is needed once the change is supported.
+
+## 2. Object rules
+
+| # | da object | hlx6 key | Body | hlx6 metadata | Notes |
+|---|---|---|---|---|---|
+| R1 | `{o}/{s}{p}.html` | `{o}/{s}{toHlx6Path(p)}.html` | rewrite images (R9), gzip | common (§3) | |
+| R2 | `{o}/{s}{p}.json` | idem `.json` | as-is, gzip | common | byte-identical after gunzip |
+| R3 | `{o}/{s}{p}.{gif,ico,jpeg,jpg,mp4,pdf,png,svg}` | idem | as-is, gzip | common | hlx6 gzips media too |
+| R4 | `{o}/{s}{f}.props` | `{o}/{s}{toHlx6Path(f)}/.props` | `{}`, gzip, `application/json` | common | only where da has a marker; implicit folders stay implicit |
+| R5 | `{o}/{s}/.trash/{name}` | `{o}/{s}/.trash/{name}` (keep the dated name) | per R1-R4 | common + `doc-path` = `/` + `sitePath(path)` | `doc-id` kept from the same da `id`, so its versions stay attached |
+| R6 | `.da-versions/{id}/{vid}.{ext}` | `{o}/{s}/.versions/{docId(id)}/{versionUlid}` (no extension) | as-is (+ R9 for html), gzip | §4 | |
+| R7 | `.da-versions/{id}/` with no live or trash doc | same as R6 (orphan versions) | | §4 | hlx6 behaves the same after the trash is emptied |
+| R8 | `.da-versions/{id}/audit*.txt` | not written to the source bus | - | - | used as input for §4; raw files archived with the migration manifest. **Review**: acceptable to drop edit-only events from the UI? |
+| R9 | `<img src>`, `<source srcset>` in html | - | intern into `helix-media-bus`; rewrite to `https://main--{s}--{o}.aem.page/media_{hash}.{ext}...` | - | same as hlx6 `POST`. Kept as-is: `./media_*`, `main--{s}--{o}.aem.(page\|live)`, DM delivery URLs |
+| R10 | `.da/comments/**` | not migrated | - | - | pre-flight **blocking** |
+| R11 | other extensions, `*.ext.props` sidecars, other `.da/**` | not migrated | - | - | pre-flight blocking / warning |
+
+## 3. Common metadata (current and trashed objects)
+
+| hlx6 key | Value |
+|---|---|
+| `doc-id` | `docId(da id)`: ULID with **time** = earliest known event of the doc (first audit line, else `timestamp`) and **random part** = hash(da `id`). Deterministic, so re-runs are idempotent |
+| `last-modified-by` | `users[0].email` from the da metadata, else `anonymous` |
+| `uncompressed-length` | byte length of the body before gzip |
+| `last-modified` | ISO of the da `timestamp` (see §1; ignored by hlx6 until supported) |
+| `da-id` | da `id`, for traceability |
+
+Headers: `Content-Type` from the extension (hlx6 `CONTENT_TYPES`), `Content-Encoding: gzip`.
+
+## 4. Version metadata
+
+da facts (from the sample):
+- version `timestamp`/`users` describe the doc **before** the snapshot, i.e. its last modification
+- the time and author of the **version creation** are on the `audit.txt` line whose versionId matches
+
+| hlx6 key | Value |
+|---|---|
+| version key ULID | time = audit line timestamp of this versionId (fallback: version `timestamp`); random part = hash(da version id) |
+| `doc-id` | `docId(da id)` |
+| `doc-path-hint` | `/` + `sitePath(path)` mapped with `toHlx6Path` |
+| `doc-last-modified` | ISO of the version `timestamp` |
+| `doc-last-modified-by` | version `users[0].email` |
+| `version-by` | audit line `users[0].email` (fallback: `doc-last-modified-by`) |
+| `version-comment` | da `label` (`Previewed`, `Published`, `Restore Point`, custom) |
+| `version-date` | ISO of the audit line timestamp (see §1) |
+| `uncompressed-length` | as above |
+| `da-version-id` | da version id, for traceability |
+
+`version-operation` is not set; da has no equivalent.
+
+## 5. Pre-flight checks
+Implemented in `bin/preflight.js`.
 
 | Check | Severity |
 |---|---|
@@ -22,15 +84,18 @@ Run before any write. Every check reports the counts and the affected keys. A **
 | Unsupported extensions | blocking |
 | Path sanitization collisions | blocking |
 | Keys not in sanitized form (renamed on hlx6) | warning |
-| Orphaned `.da-versions/{id}` (doc hard-deleted) | warning |
+| Version folders without a live or trashed doc (migrated as orphans, R7) | warning |
+| Objects with no mapping (sidecars, other `.da/`) | warning |
 
-## Invariants
-- The mapping is deterministic, so re-runs are idempotent: `doc-id` is derived from the da `id` plus its timestamp seed, and the version ULID from the da version id plus its timestamp.
-- Sanitization collisions (two da keys mapping to one hlx6 key) are detected **before** writing and reported.
-- Writes are conditional (`IfNoneMatch: *`) unless `--overwrite` is set.
+## 6. Execution invariants
+- Pre-flight first. A blocking check stops the run unless explicitly acknowledged.
+- Dry-run by default; `-x` writes.
+- Write order per document: versions first, then the current object.
+- Conditional writes (`IfNoneMatch: *`). Existing identical objects (same `da-id` / `da-version-id`) count as done, so runs are resumable and idempotent.
+- The manifest (JSONL) records `daKey → hlx6Key, docId, status`, plus the archived audit files.
 
-## Verification
-- Object counts per type and per folder
-- Body hash per current object (after gunzip and URL-rewrite normalization)
-- Version count per document = da versions (+ synthesized ones, if that is decided)
+## 7. Verification
+- Counts per kind: da current + trash = hlx6 current + trash; da versions = hlx6 versions
+- Body equality per object after gunzip (html: after image-URL normalization)
+- Per doc: version count and ULID order match the audit order
 - Sample preview through `api.aem.live` for N random documents

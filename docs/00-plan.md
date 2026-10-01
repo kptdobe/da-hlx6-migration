@@ -18,7 +18,7 @@ No migration code is written before the migration rules (04) and the architectur
 | 1 | Storage model from source code | [02-storage-model.md](02-storage-model.md) | **done (v1)** |
 | 2 | Read-only tooling: list/head/get on R2 and S3, plus dump | `src/`, `bin/` | **done** |
 | 3 | Dump both sample projects and diff them | [03-content-structure-differences.md](03-content-structure-differences.md) | **done (v1)** |
-| 4 | Migration rules | [04-migration-rules.md](04-migration-rules.md) | draft |
+| 4 | Migration rules | [04-migration-rules.md](04-migration-rules.md) | **v1, in review** |
 | 5 | Architecture ADR | [05-architecture.md](05-architecture.md) | draft |
 | 6 | Migration engine | code + tests | later |
 | 7 | Verification tooling | code + tests | later |
