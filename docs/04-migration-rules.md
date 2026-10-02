@@ -38,7 +38,7 @@ The migration writes these metadata keys **now**, so no second pass is needed on
 | R6 | `.da-versions/{id}/{vid}.{ext}` | `{o}/{s}/.versions/{docId(id)}/{versionUlid}` (no extension) | as-is (+ R9 for html), gzip | §4 | |
 | R7 | `.da-versions/{id}/` with no live or trash doc | same as R6 (orphan versions) | | §4 | hlx6 behaves the same after the trash is emptied |
 | R8 | `.da-versions/{id}/audit*.txt` | not written to the source bus | - | - | used as input for §4; raw files archived with the migration manifest. **Review**: acceptable to drop edit-only events from the UI? |
-| R9 | `<img src>`, `<source srcset>` in html | - | intern into `helix-media-bus`; rewrite to `https://main--{s}--{o}.aem.page/media_{hash}.{ext}...` | - | same as hlx6 `POST`. Kept as-is: `./media_*`, `main--{s}--{o}.aem.(page\|live)`, DM delivery URLs |
+| R9 | `<img src>`, `<source srcset>` in html | - | rewrite to **relative** `./media_{hash}.{ext}`; copy `media_{hash}` from the da site's media-bus folder (`{daContentBusId}/{hash}`, uploaded when da previewed the page) to `{targetContentBusId}/{hash}` (server-side copy) | - | hlx6 accepts `./media_*` as-is. Images of pages never previewed on da are not in the media bus: URL kept and reported |
 | R10 | `.da/comments/**` | not migrated | - | - | pre-flight **blocking** |
 | R11 | other extensions, `*.ext.props` sidecars, other `.da/**` | not migrated | - | - | pre-flight blocking / warning |
 
