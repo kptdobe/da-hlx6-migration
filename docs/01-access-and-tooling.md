@@ -55,14 +55,14 @@ Three independent layers:
 |---|---|---|---|---|
 | `helix-source-bus` | `{org}/{hlx6-site}/` (hlx6 site) | yes | yes | yes |
 | `helix-media-bus` | `{da-content-bus-id}/` (da site media) | yes | yes | **no** |
-| `helix-media-bus` | `{hlx6-content-bus-id}/` (hlx6 site media) | yes | yes | yes |
+| `helix-media-bus` | `{hlx6-content-bus-id}/` (hlx6 site media) | yes | yes | **no** (images go through the media API, see [04 §8](04-migration-rules.md#8-images-r9-upload-procedure)) |
 | `helix-config-bus` | `orgs/{org}/sites/{da-site}.json`, `{hlx6-site}.json` | no | yes | **no** |
 | anything else | - | no | no | no |
 
 Example tags for the test: `org=kptdobe`, `da-site=sample-content-da`, `hlx6-site=sample-content-hlx6-migrated`, `da-content-bus-id=cdb7c31a…`, `hlx6-content-bus-id=8a228067…`.
 
 Notes:
-- Writes are `PutObject` only. A server-side media copy needs `GetObject` on the da media and `PutObject` on the hlx6 media, both covered.
+- Writes are `PutObject` on the hlx6 site in the source bus only.
 - Buckets use SSE-S3 (`AES256`), so no KMS permission is needed. Both buckets have **versioning enabled**, so an overwrite in the hlx6 site can be rolled back by an admin.
 - Cleaning up an hlx6 site is done by an admin, never by this role.
 - Role chaining caps a session at 1 h. The tooling refreshes credentials automatically, with the same tags (`createMigrationClient`).

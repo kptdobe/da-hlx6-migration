@@ -34,7 +34,6 @@ export function createScope({
     hlx6ContentBusId,
     write: Object.freeze([
       { bucket: SOURCE_BUS, prefix: `${org}/${hlx6Site}/` },
-      { bucket: MEDIA_BUS, prefix: `${hlx6ContentBusId}/` },
     ]),
   });
 }

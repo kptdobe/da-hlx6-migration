@@ -38,7 +38,7 @@ The migration writes these metadata keys **now**, so no second pass is needed on
 | R6 | `.da-versions/{id}/{vid}.{ext}` | `{o}/{s}/.versions/{docId(id)}/{versionUlid}` (no extension) | as-is (+ R9 for html), gzip | §4 | |
 | R7 | `.da-versions/{id}/` with no live or trash doc | same as R6 (orphan versions) | | §4 | hlx6 behaves the same after the trash is emptied |
 | R8 | `.da-versions/{id}/audit*.txt` | not written to the source bus | - | - | used as input for §4; raw files archived with the migration manifest. **Review**: acceptable to drop edit-only events from the UI? |
-| R9 | `<img src>`, `<source srcset>` in html | - | rewrite to **relative** `./media_{hash}.{ext}`; copy `media_{hash}` from the da site's media-bus folder (`{daContentBusId}/{hash}`, uploaded when da previewed the page) to `{targetContentBusId}/{hash}` (server-side copy) | - | hlx6 accepts `./media_*` as-is. Images of pages never previewed on da are not in the media bus: URL kept and reported |
+| R9 | `<img src>`, `<source srcset>` in html | - | rewrite to **relative** `./media_{hash}.{ext}` after uploading the image to the hlx6 site's media bus with the **media API** (see §8) | - | covers previewed and never-previewed pages the same way |
 | R10 | `.da/comments/**` | not migrated | - | - | pre-flight **blocking** |
 | R11 | other extensions, `*.ext.props` sidecars, other `.da/**` | not migrated | - | - | pre-flight blocking / warning |
 
@@ -99,3 +99,39 @@ Implemented in `bin/preflight.js`.
 - Body equality per object after gunzip (html: after image-URL normalization)
 - Per doc: version count and ULID order match the audit order
 - Sample preview through `api.aem.live` for N random documents
+- Every `./media_{hash}` referenced by a migrated page exists in `helix-media-bus/{hlx6-content-bus-id}/`
+
+## 8. Images (R9): upload procedure
+
+### The official procedure
+helix-api-service exposes `POST https://api.aem.live/{org}/sites/{hlx6-site}/media/` (`src/media/handler.js`, permission `media:upload`). It accepts either the raw bytes (`Content-Type: image/...`) or `{"url": "..."}`. It:
+1. detects the type and rejects unsupported types (415)
+2. preprocesses and validates the file: size limits per type (site config `limits.preview.*`), and SVG checked for scripts and event handlers (409 when rejected)
+3. stores it with `@adobe/helix-mediahandler` (`storeBlob`) under `{hlx6-content-bus-id}/{hash}`, with `alg`, `agent`, `width`, `height` metadata, and the R2 mirror if the deployment enables it. An existing hash is not uploaded again.
+4. returns `{ uri: "https://main--{site}--{org}.aem.page/media_{hash}.{ext}", meta }`
+
+The hash is `"1" + sha1(contentLength + first 8 KiB)` (`src/media.js` `mediaHash`, verified against a real image). It is the same on every site, so a da page and its migrated version reference the same `media_{hash}` name, only in a different folder.
+
+### Per image
+1. Get the bytes:
+   - the page was previewed on da: read `helix-media-bus/{da-content-bus-id}/{hash}`. The hash comes from the da preview HTML or from the bytes.
+   - never previewed: fetch the original URL (`raw.githubusercontent.com`, `content.da.live` with the DA token, etc.)
+2. `POST` the bytes to the hlx6 media API. Bytes are preferred over `{url}`: no 5 s fetch timeout, no auth to forward, same result.
+3. Rewrite `src`/`srcset` to `./media_{hash}.{ext}`, using the `uri` returned by the API.
+4. On failure (fetch 404, 409 validation, 415 type): log it in the manifest and report it. What goes into the page is a decision (see below).
+
+### Why the API and not a direct media-bus write
+- Same validation as an author upload (size limits, SVG sanitization), so we never store a file hlx6 would refuse.
+- R2 mirroring and any future media bookkeeping stay the API's responsibility.
+- The migration role needs **no write access to `helix-media-bus`**, only read on the da folder (§IAM).
+- Volume is bounded: one call per **distinct** image per site, and existing hashes are skipped server-side.
+
+If throughput becomes a problem on large sites, a server-side copy from the da folder (previewed images only) is the fallback. It needs the `ReadWriteTargetMedia` statement back in the role.
+
+### Decision needed
+Images that cannot be uploaded (broken URL, too large, rejected SVG):
+- (a) keep the external URL in the stored HTML. The page is stored, but saving it from the hlx6 editor later fails until the image is fixed (PUT rejects external images).
+- (b) replace the image with a placeholder and report it.
+- (c) do not migrate the page; report it.
+
+Proposal: **(a)**, with a blocking pre-flight count so the site owner fixes them first.

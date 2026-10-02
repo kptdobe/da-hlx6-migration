@@ -39,9 +39,9 @@
       "Resource": "arn:aws:s3:::helix-media-bus/${aws:PrincipalTag/da-content-bus-id}/*"
     },
     {
-      "Sid": "ReadWriteTargetMedia",
+      "Sid": "ReadHlx6SiteMedia",
       "Effect": "Allow",
-      "Action": ["s3:GetObject", "s3:PutObject"],
+      "Action": "s3:GetObject",
       "Resource": "arn:aws:s3:::helix-media-bus/${aws:PrincipalTag/hlx6-content-bus-id}/*"
     },
     {

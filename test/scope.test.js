@@ -11,10 +11,9 @@ const spec = {
 };
 
 describe('createScope', () => {
-  it('allows writes only to the hlx6 site and its media folder', () => {
+  it('allows writes only to the hlx6 site in the source bus', () => {
     assert.deepEqual(createScope(spec).write, [
       { bucket: 'helix-source-bus', prefix: 'kptdobe/sample-content-hlx6-migrated/' },
-      { bucket: 'helix-media-bus', prefix: `${HLX6_MEDIA}/` },
     ]);
   });
   it('rejects names that could widen an IAM policy variable', () => {
@@ -47,9 +46,11 @@ describe('sessionTags', () => {
 
 describe('assertWritable', () => {
   const scope = createScope(spec);
-  it('accepts keys inside the hlx6 site and hlx6 media folder', () => {
+  it('accepts keys inside the hlx6 site', () => {
     assert.doesNotThrow(() => assertWritable(scope, 'helix-source-bus', 'kptdobe/sample-content-hlx6-migrated/index.html'));
-    assert.doesNotThrow(() => assertWritable(scope, 'helix-media-bus', `${HLX6_MEDIA}/14bee32b72`));
+  });
+  it('refuses every media-bus write: images go through the media API', () => {
+    assert.throws(() => assertWritable(scope, 'helix-media-bus', `${HLX6_MEDIA}/14bee32b72`), /Write refused/);
   });
   it('refuses the reference sites, other sites, other buckets and the da media', () => {
     [
