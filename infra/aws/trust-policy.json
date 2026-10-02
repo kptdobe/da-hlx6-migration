@@ -2,14 +2,29 @@
   "Version": "2012-10-17",
   "Statement": [
     {
+      "Sid": "AssumeOnlyWithMigrationScope",
       "Effect": "Allow",
       "Principal": {
-        "AWS": "arn:aws:iam::118435662149:role/<KLAM_ROLE_ALLOWED_TO_ASSUME>"
+        "AWS": "arn:aws:iam::118435662149:role/<OPERATOR_ROLE_ALLOWED_TO_RUN_MIGRATIONS>"
       },
-      "Action": "sts:AssumeRole",
+      "Action": ["sts:AssumeRole", "sts:TagSession"],
       "Condition": {
-        "StringEquals": {
-          "sts:RoleSessionName": "acapt"
+        "Null": {
+          "aws:RequestTag/org": "false",
+          "aws:RequestTag/da-site": "false",
+          "aws:RequestTag/site": "false",
+          "aws:RequestTag/da-content-bus-id": "false",
+          "aws:RequestTag/content-bus-id": "false"
+        },
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": ["org", "da-site", "site", "da-content-bus-id", "content-bus-id"]
+        },
+        "StringNotLike": {
+          "aws:RequestTag/org": "*/*",
+          "aws:RequestTag/da-site": "*/*",
+          "aws:RequestTag/site": "*/*",
+          "aws:RequestTag/da-content-bus-id": "*/*",
+          "aws:RequestTag/content-bus-id": "*/*"
         }
       }
     }

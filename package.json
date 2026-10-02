@@ -14,6 +14,7 @@
   "dependencies": {
     "@adobe/helix-shared-process-queue": "3.1.9",
     "@aws-sdk/client-s3": "3.1144.0",
+    "@aws-sdk/credential-providers": "3.1144.0",
     "@smithy/node-http-handler": "4.12.1"
   },
   "devDependencies": {

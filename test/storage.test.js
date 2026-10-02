@@ -1,8 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  parseDevVars, listAll, getObject, headObject, createClient, assertWritable, putObject,
+  parseDevVars, listAll, getObject, headObject, createClient, putObject,
 } from '../src/storage.js';
+import { createScope } from '../src/scope.js';
 import { fakeClient } from './fixtures/fake-client.js';
 
 describe('parseDevVars', () => {
@@ -36,30 +37,16 @@ describe('listAll', () => {
   });
 });
 
-describe('write allowlist', () => {
-  it('allows writes into the migrated test project only', () => {
-    assert.doesNotThrow(() => assertWritable('helix-source-bus', 'kptdobe/sample-content-hlx6-migrated/index.html'));
+describe('putObject', () => {
+  const scope = createScope({
+    org: 'kptdobe', daSite: 'sample-content-da', site: 'sample-content-hlx6-migrated', daContentBusId: 'a'.repeat(59), contentBusId: 'b'.repeat(59),
   });
-  it('refuses the reference projects, other sites and other buckets', () => {
-    [
-      ['helix-source-bus', 'kptdobe/sample-content-hlx6/index.html'],
-      ['helix-source-bus', 'kptdobe/sample-content-hlx6-migrated-other/index.html'],
-      ['helix-source-bus', 'adobe/site/index.html'],
-      ['aem-content', 'kptdobe/sample-content-da/index.html'],
-      ['aem-content', 'kptdobe/sample-content-hlx6-migrated/index.html'],
-      ['helix-media-bus', 'kptdobe/sample-content-hlx6-migrated/media_1.png'],
-      ['helix-config-bus', 'orgs/kptdobe/sites/sample-content-hlx6-migrated.json'],
-    ].forEach(([bucket, key]) => assert.throws(() => assertWritable(bucket, key), /Write refused/));
-  });
-  it('refuses path traversal out of the allowed prefix', () => {
-    assert.throws(() => assertWritable('helix-source-bus', 'kptdobe/sample-content-hlx6-migrated/../sample-content-hlx6/x.html'), /Write refused/);
-  });
-  it('never sends a refused write to S3', async () => {
+  it('never sends a write outside the scope to S3', async () => {
     const sent = [];
     const client = { send: async (cmd) => sent.push(cmd) };
-    await assert.rejects(putObject(client, { Bucket: 'helix-source-bus', Key: 'kptdobe/sample-content-hlx6/a.html', Body: 'x' }), /Write refused/);
+    await assert.rejects(putObject(client, scope, { Bucket: 'helix-source-bus', Key: 'kptdobe/sample-content-hlx6/a.html', Body: 'x' }), /Write refused/);
     assert.equal(sent.length, 0);
-    await putObject(client, { Bucket: 'helix-source-bus', Key: 'kptdobe/sample-content-hlx6-migrated/a.html', Body: 'x' });
+    await putObject(client, scope, { Bucket: 'helix-source-bus', Key: 'kptdobe/sample-content-hlx6-migrated/a.html', Body: 'x' });
     assert.equal(sent.length, 1);
   });
 });

@@ -34,58 +34,67 @@ The prod bucket names must be confirmed from the deployed `HELIX_BUCKET_NAMES`.
 ## Gate before Phase 3
 Read-only access verified on both sides (2026-10-01). R2 credentials: `.dev.vars` at the repo root (git-ignored, symlink to da-magic's) or `--dev-vars` / `$DA_DEV_VARS`.
 
-## Least-privilege migration identity (required before any write)
+## Migration identity: one shared role, scoped per migration
 
-The migration must never run with the personal KLAM role, which can write anywhere in the account. Two layers of protection:
-1. **IAM** (hard limit, enforced by AWS): a dedicated role, `da-hlx6-migration-test`, that can only touch the test folders.
-2. **Code** (`WRITE_ALLOWLIST` in `src/storage.js`): refuses any write outside the target before calling AWS.
+The migration never runs with a personal role, which can write anywhere in the account. It uses **one** role, `da-hlx6-migration`, created once. The role **has no access by itself**: every permission is tied to STS **session tags** that the tooling sets when it assumes the role for a given migration.
 
-### AWS role: [infra/aws/migration-policy.json](../infra/aws/migration-policy.json)
+```mermaid
+flowchart LR
+  op[operator credentials] -- "AssumeRole + tags\norg, da-site, site,\nda-content-bus-id, content-bus-id" --> role[da-hlx6-migration role]
+  role -- "policy variables\n${aws:PrincipalTag/...}" --> s3[(only the folders of this migration)]
+```
 
-| Bucket | Folder | List | Read | Write |
+Three independent layers:
+1. **Trust policy** ([infra/aws/trust-policy.json](../infra/aws/trust-policy.json)): the role can only be assumed by the operator role, and only with **all 5 tags** set, no extra tag and no `/` in a value.
+2. **Role policy** ([infra/aws/migration-role-policy.json](../infra/aws/migration-role-policy.json)): every resource is built from the tags, and a missing tag is an explicit Deny. Deleting and reconfiguring are always denied.
+3. **Code** (`src/scope.js`): validates the values (`[a-z0-9-]`, hex ids, source ≠ target media folder) and refuses any write outside the scope before calling AWS.
+
+### What one migration session can do
+
+| Bucket | Folder (from tags) | List | Read | Write |
 |---|---|---|---|---|
-| `helix-source-bus` | `kptdobe/sample-content-hlx6/` (reference) | yes | yes | **no** |
-| `helix-source-bus` | `kptdobe/sample-content-hlx6-migrated/` (target) | yes | yes | yes |
-| `helix-media-bus` | `cdb7c31a…` (sample-content-da media) | yes | yes | **no** |
-| `helix-media-bus` | `8a228067…` (sample-content-hlx6-migrated media) | yes | yes | yes |
-| `helix-config-bus` | the 3 site JSON files | no | yes | **no** |
+| `helix-source-bus` | `{org}/{site}/` (target) | yes | yes | yes |
+| `helix-media-bus` | `{da-content-bus-id}/` (da site media) | yes | yes | **no** |
+| `helix-media-bus` | `{content-bus-id}/` (target media) | yes | yes | yes |
+| `helix-config-bus` | `orgs/{org}/sites/{da-site}.json`, `{site}.json` | no | yes | **no** |
 | anything else | - | no | no | no |
 
-- **No delete at all** (explicit Deny), and no ACL or bucket-config changes.
-- Writes are `PutObject` only. A server-side media copy needs `GetObject` on the source and `PutObject` on the target, both covered.
-- Buckets use SSE-S3 (`AES256`), so no KMS permission is needed.
-- Both buckets have **versioning enabled**. An overwrite in the target never destroys data, and an admin can roll back.
-- Cleaning up the target site (e.g. before re-running a test) is done by an admin, not by this role.
+Example tags for the test: `org=kptdobe`, `da-site=sample-content-da`, `site=sample-content-hlx6-migrated`, `da-content-bus-id=cdb7c31a…`, `content-bus-id=8a228067…`.
 
-### Creating it (to be done by an account admin, not by the migration tooling)
+Notes:
+- Writes are `PutObject` only. A server-side media copy needs `GetObject` on the source and `PutObject` on the target, both covered.
+- Buckets use SSE-S3 (`AES256`), so no KMS permission is needed. Both buckets have **versioning enabled**, so an overwrite in the target can be rolled back by an admin.
+- Cleaning up a target site is done by an admin, never by this role.
+- Role chaining caps a session at 1 h. The tooling refreshes credentials automatically, with the same tags (`createMigrationClient`).
+- The da side (R2) is read-only and does not go through this role (see below).
+
+### Remaining risk
+Whoever can assume the role chooses the tags, so **the trust policy principal is the real security boundary**: restrict it to the operator role(s) that run migrations. A wrong but valid tag value (e.g. another existing site) would be accepted by IAM. The tooling therefore:
+- resolves `content-bus-id` and `da-content-bus-id` from the config bus itself instead of taking them as input, and
+- refuses to write into a target site that already has content not produced by the migration (pre-flight, to be added with the writer).
+
+Not verified yet: whether a `*` inside a substituted tag value acts as a wildcard. The code rejects such values, and the deny checks below test it explicitly.
+
+### Creating it (once, by an account admin)
 ```bash
-# edit the principal in infra/aws/trust-policy.json first
-aws iam create-role --role-name da-hlx6-migration-test \
+# set the operator principal in infra/aws/trust-policy.json first
+aws iam create-role --role-name da-hlx6-migration \
   --assume-role-policy-document file://infra/aws/trust-policy.json \
   --max-session-duration 3600
-aws iam put-role-policy --role-name da-hlx6-migration-test \
-  --policy-name da-hlx6-migration-test \
-  --policy-document file://infra/aws/migration-policy.json
+aws iam put-role-policy --role-name da-hlx6-migration \
+  --policy-name da-hlx6-migration \
+  --policy-document file://infra/aws/migration-role-policy.json
 ```
-
-Local profile in `~/.aws/config`, assumed from the KLAM credentials:
-```ini
-[profile da-hlx6-migration]
-role_arn = arn:aws:iam::118435662149:role/da-hlx6-migration-test
-source_profile = default
-role_session_name = acapt
-region = us-east-1
-```
-Run the tooling with `AWS_PROFILE=da-hlx6-migration`.
 
 ### Verification before the first write
-```bash
-AWS_PROFILE=da-hlx6-migration aws sts get-caller-identity          # must show da-hlx6-migration-test
-# each of these must be AccessDenied:
-AWS_PROFILE=da-hlx6-migration aws s3 ls s3://helix-source-bus/adobe/
-AWS_PROFILE=da-hlx6-migration aws s3api put-object --bucket helix-source-bus --key kptdobe/sample-content-hlx6/deny-test.html --body /dev/null
-AWS_PROFILE=da-hlx6-migration aws s3api delete-object --bucket helix-source-bus --key kptdobe/sample-content-hlx6-migrated/deny-test.html
-```
+Run as the operator. Assume with the test tags, then check that each of these is **AccessDenied**:
+- list `s3://helix-source-bus/kptdobe/sample-content-hlx6/` (the reference site)
+- put into `helix-source-bus/kptdobe/sample-content-hlx6/`
+- put into `helix-media-bus/{da-content-bus-id}/`
+- delete in `helix-source-bus/kptdobe/sample-content-hlx6-migrated/`
+- AssumeRole without tags, with a missing tag, or with `site=*`
+
+And that listing and putting into `kptdobe/sample-content-hlx6-migrated/` succeed.
 
 ### R2 (da side, read only)
 R2 API tokens can be scoped per bucket, not per prefix. Use a **new token**: "Object Read only" on `aem-content`, with an expiry. Do not use the da-magic token, which has broader rights. Store it in this repo's `.dev.vars` (git-ignored). The tooling never writes to R2: there is no R2 write path in the code.

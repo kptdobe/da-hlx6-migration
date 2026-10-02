@@ -5,30 +5,44 @@ import {
   S3Client, ListObjectsV2Command, HeadObjectCommand, GetObjectCommand, PutObjectCommand,
 } from '@aws-sdk/client-s3';
 import { NodeHttpHandler } from '@smithy/node-http-handler';
+import { fromTemporaryCredentials } from '@aws-sdk/credential-providers';
+import { assertWritable, sessionTags, sessionName } from './scope.js';
 
 export const BACKENDS = {
   da: { bucket: 'aem-content' },
   hlx6: { bucket: 'helix-source-bus', region: 'us-east-1' },
 };
 
-// Only the migration target may ever be written; the da and hlx6 sample sites stay read-only references.
-export const WRITE_ALLOWLIST = [
-  { bucket: 'helix-source-bus', prefix: 'kptdobe/sample-content-hlx6-migrated/' },
-];
-
-export function assertWritable(bucket, key) {
-  const ok = !key.includes('..')
-    && WRITE_ALLOWLIST.some((a) => a.bucket === bucket && key.startsWith(a.prefix));
-  if (!ok) throw new Error(`Write refused, not in allowlist: s3://${bucket}/${key}`);
+/**
+ * Writes an object after checking it is inside the migration scope.
+ * @param {object} params PutObject input (Bucket, Key, Body, ContentType, ...)
+ */
+export async function putObject(client, scope, params) {
+  assertWritable(scope, params.Bucket, params.Key);
+  return client.send(new PutObjectCommand(params));
 }
 
 /**
- * Writes an object after checking the allowlist.
- * @param {object} params PutObject input (Bucket, Key, Body, ContentType, ...)
+ * S3 client running as the shared migration role, restricted to one migration by session tags.
+ * Credentials are refreshed automatically (role chaining caps sessions at 1h).
+ * @param {object} scope from createScope
+ * @param {string} roleArn migration role ARN
  */
-export async function putObject(client, params) {
-  assertWritable(params.Bucket, params.Key);
-  return client.send(new PutObjectCommand(params));
+export function createMigrationClient(scope, roleArn, region = BACKENDS.hlx6.region) {
+  return new S3Client({
+    region,
+    maxAttempts: 5,
+    requestHandler: httpHandler(),
+    credentials: fromTemporaryCredentials({
+      params: {
+        RoleArn: roleArn,
+        RoleSessionName: sessionName(scope),
+        Tags: sessionTags(scope),
+        DurationSeconds: 3600,
+      },
+      clientConfig: { region },
+    }),
+  });
 }
 
 /**
