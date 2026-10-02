@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import https from 'node:https';
 import { gunzipSync } from 'node:zlib';
 import {
-  S3Client, ListObjectsV2Command, HeadObjectCommand, GetObjectCommand,
+  S3Client, ListObjectsV2Command, HeadObjectCommand, GetObjectCommand, PutObjectCommand,
 } from '@aws-sdk/client-s3';
 import { NodeHttpHandler } from '@smithy/node-http-handler';
 
@@ -10,6 +10,26 @@ export const BACKENDS = {
   da: { bucket: 'aem-content' },
   hlx6: { bucket: 'helix-source-bus', region: 'us-east-1' },
 };
+
+// Only the migration target may ever be written; the da and hlx6 sample sites stay read-only references.
+export const WRITE_ALLOWLIST = [
+  { bucket: 'helix-source-bus', prefix: 'kptdobe/sample-content-hlx6-migrated/' },
+];
+
+export function assertWritable(bucket, key) {
+  const ok = !key.includes('..')
+    && WRITE_ALLOWLIST.some((a) => a.bucket === bucket && key.startsWith(a.prefix));
+  if (!ok) throw new Error(`Write refused, not in allowlist: s3://${bucket}/${key}`);
+}
+
+/**
+ * Writes an object after checking the allowlist.
+ * @param {object} params PutObject input (Bucket, Key, Body, ContentType, ...)
+ */
+export async function putObject(client, params) {
+  assertWritable(params.Bucket, params.Key);
+  return client.send(new PutObjectCommand(params));
+}
 
 /**
  * Parses a wrangler-style `.dev.vars` file content (KEY=VALUE lines).

@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  parseDevVars, listAll, getObject, headObject, createClient,
+  parseDevVars, listAll, getObject, headObject, createClient, assertWritable, putObject,
 } from '../src/storage.js';
 import { fakeClient } from './fixtures/fake-client.js';
 
@@ -33,6 +33,34 @@ describe('listAll', () => {
     const list = await listAll(client, 'bucket', 'org/site/');
     assert.deepEqual(list.map((o) => o.key), ['org/site/doc0.html', 'org/site/doc1.html', 'org/site/doc2.html', 'org/site/doc3.html', 'org/site/doc4.html']);
     assert.equal(client.calls.filter((c) => c === 'ListObjectsV2Command').length, 3);
+  });
+});
+
+describe('write allowlist', () => {
+  it('allows writes into the migrated test project only', () => {
+    assert.doesNotThrow(() => assertWritable('helix-source-bus', 'kptdobe/sample-content-hlx6-migrated/index.html'));
+  });
+  it('refuses the reference projects, other sites and other buckets', () => {
+    [
+      ['helix-source-bus', 'kptdobe/sample-content-hlx6/index.html'],
+      ['helix-source-bus', 'kptdobe/sample-content-hlx6-migrated-other/index.html'],
+      ['helix-source-bus', 'adobe/site/index.html'],
+      ['aem-content', 'kptdobe/sample-content-da/index.html'],
+      ['aem-content', 'kptdobe/sample-content-hlx6-migrated/index.html'],
+      ['helix-media-bus', 'kptdobe/sample-content-hlx6-migrated/media_1.png'],
+      ['helix-config-bus', 'orgs/kptdobe/sites/sample-content-hlx6-migrated.json'],
+    ].forEach(([bucket, key]) => assert.throws(() => assertWritable(bucket, key), /Write refused/));
+  });
+  it('refuses path traversal out of the allowed prefix', () => {
+    assert.throws(() => assertWritable('helix-source-bus', 'kptdobe/sample-content-hlx6-migrated/../sample-content-hlx6/x.html'), /Write refused/);
+  });
+  it('never sends a refused write to S3', async () => {
+    const sent = [];
+    const client = { send: async (cmd) => sent.push(cmd) };
+    await assert.rejects(putObject(client, { Bucket: 'helix-source-bus', Key: 'kptdobe/sample-content-hlx6/a.html', Body: 'x' }), /Write refused/);
+    assert.equal(sent.length, 0);
+    await putObject(client, { Bucket: 'helix-source-bus', Key: 'kptdobe/sample-content-hlx6-migrated/a.html', Body: 'x' });
+    assert.equal(sent.length, 1);
   });
 });
 
