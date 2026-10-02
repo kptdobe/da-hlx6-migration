@@ -5,36 +5,36 @@ export const SOURCE_BUS = 'helix-source-bus';
 export const MEDIA_BUS = 'helix-media-bus';
 
 // Session tag keys; must match the policy variables in infra/aws/migration-role-policy.json.
-export const TAG_KEYS = ['org', 'da-site', 'site', 'da-content-bus-id', 'content-bus-id'];
+export const TAG_KEYS = ['org', 'da-site', 'hlx6-site', 'da-content-bus-id', 'hlx6-content-bus-id'];
 
 /**
  * Describes what one migration run may touch.
  * @param {object} spec
  * @param {string} spec.org
  * @param {string} spec.daSite da source site (read only, on R2)
- * @param {string} spec.site hlx6 target site
+ * @param {string} spec.hlx6Site hlx6 site (written)
  * @param {string} spec.daContentBusId media-bus folder of the da site (read only)
- * @param {string} spec.contentBusId media-bus folder of the target site
+ * @param {string} spec.hlx6ContentBusId media-bus folder of the hlx6 site
  */
 export function createScope({
-  org, daSite, site, daContentBusId, contentBusId,
+  org, daSite, hlx6Site, daContentBusId, hlx6ContentBusId,
 }) {
-  [['org', org], ['daSite', daSite], ['site', site]].forEach(([k, v]) => {
+  [['org', org], ['daSite', daSite], ['hlx6Site', hlx6Site]].forEach(([k, v]) => {
     if (!NAME.test(v || '')) throw new Error(`Invalid ${k}: ${v}`);
   });
-  [['daContentBusId', daContentBusId], ['contentBusId', contentBusId]].forEach(([k, v]) => {
+  [['daContentBusId', daContentBusId], ['hlx6ContentBusId', hlx6ContentBusId]].forEach(([k, v]) => {
     if (!CONTENT_BUS_ID.test(v || '')) throw new Error(`Invalid ${k}: ${v}`);
   });
-  if (daContentBusId === contentBusId) throw new Error('Source and target media folders must differ');
+  if (daContentBusId === hlx6ContentBusId) throw new Error('da and hlx6 media folders must differ');
   return Object.freeze({
     org,
     daSite,
-    site,
+    hlx6Site,
     daContentBusId,
-    contentBusId,
+    hlx6ContentBusId,
     write: Object.freeze([
-      { bucket: SOURCE_BUS, prefix: `${org}/${site}/` },
-      { bucket: MEDIA_BUS, prefix: `${contentBusId}/` },
+      { bucket: SOURCE_BUS, prefix: `${org}/${hlx6Site}/` },
+      { bucket: MEDIA_BUS, prefix: `${hlx6ContentBusId}/` },
     ]),
   });
 }
@@ -44,12 +44,12 @@ export function createScope({
  * @returns {{Key: string, Value: string}[]}
  */
 export function sessionTags(scope) {
-  const values = [scope.org, scope.daSite, scope.site, scope.daContentBusId, scope.contentBusId];
+  const values = [scope.org, scope.daSite, scope.hlx6Site, scope.daContentBusId, scope.hlx6ContentBusId];
   return TAG_KEYS.map((Key, i) => ({ Key, Value: values[i] }));
 }
 
 export function sessionName(scope) {
-  return `mig-${scope.org}-${scope.site}`.slice(0, 64);
+  return `mig-${scope.org}-${scope.hlx6Site}`.slice(0, 64);
 }
 
 export function assertWritable(scope, bucket, key) {

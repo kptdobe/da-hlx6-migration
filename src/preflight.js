@@ -18,15 +18,15 @@ export function preflight(entries) {
     .filter((e) => e.kind !== 'folder' && !isSupportedOnHlx6(e.path))
     .map((e) => e.path);
 
-  const byTarget = new Map();
+  const byHlx6Key = new Map();
   current.forEach((e) => {
-    const target = `${e.kind === 'folder' ? 'folder' : 'file'}:${toHlx6Path(e.path)}`;
-    if (!byTarget.has(target)) byTarget.set(target, []);
-    byTarget.get(target).push(e.path);
+    const hlx6Key = `${e.kind === 'folder' ? 'folder' : 'file'}:${toHlx6Path(e.path)}`;
+    if (!byHlx6Key.has(hlx6Key)) byHlx6Key.set(hlx6Key, []);
+    byHlx6Key.get(hlx6Key).push(e.path);
   });
-  const collisions = [...byTarget.entries()]
+  const collisions = [...byHlx6Key.entries()]
     .filter(([, paths]) => paths.length > 1)
-    .map(([target, paths]) => ({ target: target.split(':')[1], paths }));
+    .map(([hlx6Key, paths]) => ({ hlx6Path: hlx6Key.split(':')[1], paths }));
 
   const renamed = current
     .filter((e) => toHlx6Path(e.path) !== e.path)

@@ -133,11 +133,11 @@ export function compareDumps(da, hlx6) {
   const matched = [];
   const onlyDa = [];
   da.filter((e) => CURRENT_KINDS.includes(e.kind)).forEach((e) => {
-    const target = toHlx6Path(e.path);
-    const key = `${e.kind}:${target}`;
+    const hlx6Path = toHlx6Path(e.path);
+    const key = `${e.kind}:${hlx6Path}`;
     const other = hlx6Current.get(key);
     if (!other) {
-      onlyDa.push({ kind: e.kind, path: e.path, expectedHlx6Path: target });
+      onlyDa.push({ kind: e.kind, path: e.path, expectedHlx6Path: hlx6Path });
       return;
     }
     hlx6Current.delete(key);
@@ -145,7 +145,7 @@ export function compareDumps(da, hlx6) {
       kind: e.kind,
       daPath: e.path,
       hlx6Path: other.path,
-      renamed: target !== e.path,
+      renamed: hlx6Path !== e.path,
       contentType: { da: e.contentType, hlx6: other.contentType },
       size: { da: e.size, hlx6: other.size, hlx6Uncompressed: Number(other.metadata?.['uncompressed-length']) || undefined },
       body: e.kind === 'folder' ? { compared: false } : compareBodies(e.kind, e.body, other.body),

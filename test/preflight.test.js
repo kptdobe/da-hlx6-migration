@@ -42,7 +42,7 @@ describe('preflight', () => {
   it('blocks paths that collide after sanitization', () => {
     const result = preflight([da('/my_page.html', { id: 'U1' }), da('/my-page.html', { id: 'U2' })]);
     assert.equal(result.ok, false);
-    assert.deepEqual(check(result, 'path-collisions').items, [{ target: '/my-page.html', paths: ['/my_page.html', '/my-page.html'] }]);
+    assert.deepEqual(check(result, 'path-collisions').items, [{ hlx6Path: '/my-page.html', paths: ['/my_page.html', '/my-page.html'] }]);
   });
 
   it('does not treat a folder and a same-named document as a collision', () => {

@@ -8,7 +8,7 @@
       "Resource": "arn:aws:s3:::helix-source-bus",
       "Condition": {
         "StringLike": {
-          "s3:prefix": "${aws:PrincipalTag/org}/${aws:PrincipalTag/site}/*"
+          "s3:prefix": "${aws:PrincipalTag/org}/${aws:PrincipalTag/hlx6-site}/*"
         }
       }
     },
@@ -16,7 +16,7 @@
       "Sid": "ReadWriteTargetSite",
       "Effect": "Allow",
       "Action": ["s3:GetObject", "s3:PutObject"],
-      "Resource": "arn:aws:s3:::helix-source-bus/${aws:PrincipalTag/org}/${aws:PrincipalTag/site}/*"
+      "Resource": "arn:aws:s3:::helix-source-bus/${aws:PrincipalTag/org}/${aws:PrincipalTag/hlx6-site}/*"
     },
     {
       "Sid": "ListMedia",
@@ -27,7 +27,7 @@
         "StringLike": {
           "s3:prefix": [
             "${aws:PrincipalTag/da-content-bus-id}/*",
-            "${aws:PrincipalTag/content-bus-id}/*"
+            "${aws:PrincipalTag/hlx6-content-bus-id}/*"
           ]
         }
       }
@@ -42,7 +42,7 @@
       "Sid": "ReadWriteTargetMedia",
       "Effect": "Allow",
       "Action": ["s3:GetObject", "s3:PutObject"],
-      "Resource": "arn:aws:s3:::helix-media-bus/${aws:PrincipalTag/content-bus-id}/*"
+      "Resource": "arn:aws:s3:::helix-media-bus/${aws:PrincipalTag/hlx6-content-bus-id}/*"
     },
     {
       "Sid": "ReadSiteConfigs",
@@ -50,7 +50,7 @@
       "Action": "s3:GetObject",
       "Resource": [
         "arn:aws:s3:::helix-config-bus/orgs/${aws:PrincipalTag/org}/sites/${aws:PrincipalTag/da-site}.json",
-        "arn:aws:s3:::helix-config-bus/orgs/${aws:PrincipalTag/org}/sites/${aws:PrincipalTag/site}.json"
+        "arn:aws:s3:::helix-config-bus/orgs/${aws:PrincipalTag/org}/sites/${aws:PrincipalTag/hlx6-site}.json"
       ]
     },
     {
@@ -65,14 +65,14 @@
       "Effect": "Deny",
       "Action": "*",
       "Resource": "*",
-      "Condition": { "Null": { "aws:PrincipalTag/site": "true" } }
+      "Condition": { "Null": { "aws:PrincipalTag/hlx6-site": "true" } }
     },
     {
       "Sid": "DenyWithoutTargetMedia",
       "Effect": "Deny",
       "Action": "*",
       "Resource": "*",
-      "Condition": { "Null": { "aws:PrincipalTag/content-bus-id": "true" } }
+      "Condition": { "Null": { "aws:PrincipalTag/hlx6-content-bus-id": "true" } }
     },
     {
       "Sid": "NeverDeleteOrReconfigure",

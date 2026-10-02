@@ -12,19 +12,19 @@
         "Null": {
           "aws:RequestTag/org": "false",
           "aws:RequestTag/da-site": "false",
-          "aws:RequestTag/site": "false",
+          "aws:RequestTag/hlx6-site": "false",
           "aws:RequestTag/da-content-bus-id": "false",
-          "aws:RequestTag/content-bus-id": "false"
+          "aws:RequestTag/hlx6-content-bus-id": "false"
         },
         "ForAllValues:StringEquals": {
-          "aws:TagKeys": ["org", "da-site", "site", "da-content-bus-id", "content-bus-id"]
+          "aws:TagKeys": ["org", "da-site", "hlx6-site", "da-content-bus-id", "hlx6-content-bus-id"]
         },
         "StringNotLike": {
           "aws:RequestTag/org": "*/*",
           "aws:RequestTag/da-site": "*/*",
-          "aws:RequestTag/site": "*/*",
+          "aws:RequestTag/hlx6-site": "*/*",
           "aws:RequestTag/da-content-bus-id": "*/*",
-          "aws:RequestTag/content-bus-id": "*/*"
+          "aws:RequestTag/hlx6-content-bus-id": "*/*"
         }
       }
     }

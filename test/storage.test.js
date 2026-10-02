@@ -39,7 +39,7 @@ describe('listAll', () => {
 
 describe('putObject', () => {
   const scope = createScope({
-    org: 'kptdobe', daSite: 'sample-content-da', site: 'sample-content-hlx6-migrated', daContentBusId: 'a'.repeat(59), contentBusId: 'b'.repeat(59),
+    org: 'kptdobe', daSite: 'sample-content-da', hlx6Site: 'sample-content-hlx6-migrated', daContentBusId: 'a'.repeat(59), hlx6ContentBusId: 'b'.repeat(59),
   });
   it('never sends a write outside the scope to S3', async () => {
     const sent = [];

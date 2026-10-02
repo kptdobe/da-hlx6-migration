@@ -40,38 +40,38 @@ The migration never runs with a personal role, which can write anywhere in the a
 
 ```mermaid
 flowchart LR
-  op[operator credentials] -- "AssumeRole + tags\norg, da-site, site,\nda-content-bus-id, content-bus-id" --> role[da-hlx6-migration role]
+  op[operator credentials] -- "AssumeRole + tags\norg, da-site, hlx6-site,\nda-content-bus-id, hlx6-content-bus-id" --> role[da-hlx6-migration role]
   role -- "policy variables\n${aws:PrincipalTag/...}" --> s3[(only the folders of this migration)]
 ```
 
 Three independent layers:
 1. **Trust policy** ([infra/aws/trust-policy.json](../infra/aws/trust-policy.json)): the role can only be assumed by the operator role, and only with **all 5 tags** set, no extra tag and no `/` in a value.
 2. **Role policy** ([infra/aws/migration-role-policy.json](../infra/aws/migration-role-policy.json)): every resource is built from the tags, and a missing tag is an explicit Deny. Deleting and reconfiguring are always denied.
-3. **Code** (`src/scope.js`): validates the values (`[a-z0-9-]`, hex ids, source ≠ target media folder) and refuses any write outside the scope before calling AWS.
+3. **Code** (`src/scope.js`): validates the values (`[a-z0-9-]`, hex ids, da ≠ hlx6 media folder) and refuses any write outside the scope before calling AWS.
 
 ### What one migration session can do
 
 | Bucket | Folder (from tags) | List | Read | Write |
 |---|---|---|---|---|
-| `helix-source-bus` | `{org}/{site}/` (target) | yes | yes | yes |
+| `helix-source-bus` | `{org}/{hlx6-site}/` (hlx6 site) | yes | yes | yes |
 | `helix-media-bus` | `{da-content-bus-id}/` (da site media) | yes | yes | **no** |
-| `helix-media-bus` | `{content-bus-id}/` (target media) | yes | yes | yes |
-| `helix-config-bus` | `orgs/{org}/sites/{da-site}.json`, `{site}.json` | no | yes | **no** |
+| `helix-media-bus` | `{hlx6-content-bus-id}/` (hlx6 site media) | yes | yes | yes |
+| `helix-config-bus` | `orgs/{org}/sites/{da-site}.json`, `{hlx6-site}.json` | no | yes | **no** |
 | anything else | - | no | no | no |
 
-Example tags for the test: `org=kptdobe`, `da-site=sample-content-da`, `site=sample-content-hlx6-migrated`, `da-content-bus-id=cdb7c31a…`, `content-bus-id=8a228067…`.
+Example tags for the test: `org=kptdobe`, `da-site=sample-content-da`, `hlx6-site=sample-content-hlx6-migrated`, `da-content-bus-id=cdb7c31a…`, `hlx6-content-bus-id=8a228067…`.
 
 Notes:
-- Writes are `PutObject` only. A server-side media copy needs `GetObject` on the source and `PutObject` on the target, both covered.
-- Buckets use SSE-S3 (`AES256`), so no KMS permission is needed. Both buckets have **versioning enabled**, so an overwrite in the target can be rolled back by an admin.
-- Cleaning up a target site is done by an admin, never by this role.
+- Writes are `PutObject` only. A server-side media copy needs `GetObject` on the da media and `PutObject` on the hlx6 media, both covered.
+- Buckets use SSE-S3 (`AES256`), so no KMS permission is needed. Both buckets have **versioning enabled**, so an overwrite in the hlx6 site can be rolled back by an admin.
+- Cleaning up an hlx6 site is done by an admin, never by this role.
 - Role chaining caps a session at 1 h. The tooling refreshes credentials automatically, with the same tags (`createMigrationClient`).
 - The da side (R2) is read-only and does not go through this role (see below).
 
 ### Remaining risk
 Whoever can assume the role chooses the tags, so **the trust policy principal is the real security boundary**: restrict it to the operator role(s) that run migrations. A wrong but valid tag value (e.g. another existing site) would be accepted by IAM. The tooling therefore:
-- resolves `content-bus-id` and `da-content-bus-id` from the config bus itself instead of taking them as input, and
-- refuses to write into a target site that already has content not produced by the migration (pre-flight, to be added with the writer).
+- resolves `da-content-bus-id` and `hlx6-content-bus-id` from the config bus itself instead of taking them as input, and
+- refuses to write into an hlx6 site that already has content not produced by the migration (pre-flight, to be added with the writer).
 
 Not verified yet: whether a `*` inside a substituted tag value acts as a wildcard. The code rejects such values, and the deny checks below test it explicitly.
 
@@ -92,7 +92,7 @@ Run as the operator. Assume with the test tags, then check that each of these is
 - put into `helix-source-bus/kptdobe/sample-content-hlx6/`
 - put into `helix-media-bus/{da-content-bus-id}/`
 - delete in `helix-source-bus/kptdobe/sample-content-hlx6-migrated/`
-- AssumeRole without tags, with a missing tag, or with `site=*`
+- AssumeRole without tags, with a missing tag, or with `hlx6-site=*`
 
 And that listing and putting into `kptdobe/sample-content-hlx6-migrated/` succeed.
 
