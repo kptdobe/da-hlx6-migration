@@ -15,7 +15,7 @@ Each question below states the problem, why it matters, and the options. **Rec.*
 
 | # | Topic | Blocks the migration? | Needs a decision from | Status |
 |---|---|---|---|---|
-| 1 | [Site cutover: the content bus id changes](#1-site-cutover-the-content-bus-id-changes) | **yes** | helix team | open |
+| 1 | [Site cutover: keep the content bus id stable](#1-site-cutover-keep-the-content-bus-id-stable) | **yes** | helix team | mechanism open; decision made |
 | 2 | [Original dates are lost](#2-original-dates-are-lost) | no (data kept, not displayed) | helix team, product | open |
 | 3 | [Edit history without a saved version](#3-edit-history-without-a-saved-version) | no | product | open |
 | 4 | [Images that cannot be uploaded](#4-images-that-cannot-be-uploaded) | per site | product | open |
@@ -30,7 +30,9 @@ Each question below states the problem, why it matters, and the options. **Rec.*
 
 ---
 
-## 1. Site cutover: the content bus id changes
+## 1. Site cutover: keep the content bus id stable
+
+**Team decision.** When changing a project's content source from da to hlx6, its `contentBusId` must remain stable.
 
 **Problem.** Every site has a `contentBusId`. It names the folder that holds the site's **images** (`helix-media-bus/{id}/`) and its **preview and live content** (`helix-content-bus/{id}/`).
 
@@ -42,7 +44,7 @@ contentBusId = sha256(content.source.url)[0..59]
 
 This is `updateContentSource()` in `@adobe/helix-config-storage` (3.6.0), called on every config `create()` and `update()`. A stored value that doesn't match the URL is overwritten.
 
-Migrating site `abc` to hlx6 means changing its content source URL, so the id changes even though the site name stays the same:
+The current config-storage code derives the id from the content source URL, so changing the URL would normally change the id even though the site name stays the same:
 
 | | content source URL | contentBusId |
 |---|---|---|
@@ -51,26 +53,29 @@ Migrating site `abc` to hlx6 means changing its content source URL, so the id ch
 
 Confirmed on the test sites: `sample-content-da` → `cdb7c31a…`, `sample-content-hlx6-migrated` → `8a228067…`, both matching the formula.
 
-**Why it matters.** When the config switches, the site starts reading from Y, which is empty:
+**Why it matters.** If the config update recomputes the ID (as current code does), the site starts reading from Y, which is empty:
 - **The live site shows nothing**, because no page is previewed or published under Y.
 - **Images are missing**: the ones previewed on da stay under X.
 - The CDN cache for X is purged on the config change (`AdminConfigStore.purge`).
 
-Re-saving the migrated documents is not enough; the preview and live state must exist under Y too.
+Re-saving the migrated documents is not enough; the preview and live state must exist under Y too. Preserving X avoids this failure mode.
 
-**Options**
+**Impact of the decision.** If the id is preserved:
+- the preview/live folder remains addressable, avoiding a blank site or republishing all pages;
+- images already in the da site's media folder are already in the hlx6 site's folder;
+- the migration only needs to add missing/new media there, via the hlx6 media API, and migrate source objects/versions.
+
+**What remains open is how the platform guarantees this.**
 
 | | Approach | Pros | Cons |
 |---|---|---|---|
-| A | Switch, then preview and publish every page again | No new tooling | Site is down or incomplete during the bulk publish (hours for large sites); republishes pages that were intentionally left unpublished or only previewed, unless we replay the exact state |
-| B | Before the switch, copy `X/preview` and `X/live` to `Y/` (content bus and media bus) | No visible change for visitors; exact preview and live state kept | The migration must write to the content bus (new permission); we must check that nothing else in the content bus depends on the id (indexes, sitemaps, redirects, snapshots); copies must be redone for pages changed before the switch |
-| C | Let a site keep its id when its source changes (hlx6 change: e.g. an explicit `contentBusId` that `updateContentSource` does not overwrite, or an admin-only "upgrade" operation) | Nothing to copy for preview, live or previewed images; no outage | Changes a core invariant (id = hash of the source); every consumer of the id must be checked; needs helix team work |
+| A | Preserve the existing ID as explicit config during upgrade; stop unconditionally recomputing it on source URL changes | Simple mental model; existing preview/live/media stay put | Requires config validation and every contentBusId consumer to accept a stable ID |
+| B | Add an explicit da-to-hlx6 upgrade operation that carries the ID forward | Makes the transition atomic and auditable | Requires a migration/upgrade endpoint and operational workflow |
+| C | Maintain an old-source-ID to new-source-ID alias | Does not change the ID invariant | Adds indirection to every content/media lookup and cache path |
 
-**Rec.** C if the helix team accepts it: it is the only option with no outage and no bulk copy. Otherwise B.
+No choice has been made about the implementation; the team decision is only that stability is required.
 
-Images are handled in either case: with C the da images are already in place; with B they are copied with the rest.
-
-**Question for the helix team:** is there already a planned "upgrade" path for a da site to hlx6 (da-live detects it via the `x-api-upgrade-available` header)? What does it do with the content bus id?
+**Question for the helix team:** which mechanism will preserve the current ID, and how will it avoid purging or orphaning preview/live content during the source switch?
 
 ---
 
@@ -93,7 +98,7 @@ Images are handled in either case: with C the da images are already in place; wi
 | | Approach | Pros | Cons |
 |---|---|---|---|
 | A | Accept it | No work | History loses its dates; confusing for authors |
-| B | hlx6 reads an optional date from metadata (`last-modified` on documents, `version-date` on versions) and falls back to `LastModified` | Small API change; the migration already writes these values, so no re-run | Folder listings still show the migration date unless the listing also reads metadata (one extra request per item) |
+| B | hlx6 reads an optional date from metadata (`doc-last-modified` on documents, `version-date` on versions) and falls back to `LastModified` | Small API change; the migration already writes these values, so no re-run | Folder listings still show the migration date unless the listing also reads metadata (one extra request per item) |
 | C | B, plus the listing reads metadata | Complete | Listing cost |
 
 **Rec.** B. The migration writes the original dates in metadata now, so they are preserved whatever is decided.
@@ -124,7 +129,7 @@ Saved versions migrate one to one. **Editing sessions that did not create a vers
 
 **Problem.** hlx6 does not accept external image URLs in a page: they must be uploaded to the site's media folder and referenced as `./media_{hash}.{ext}`. The migration does this through the official media API (`POST /{org}/sites/{site}/media/`), which validates each image the same way as an author upload. Some images will fail:
 - the URL no longer exists
-- the file is too large (hlx6 limit 4.5 MB vs 20 MB on da)
+- the regular media upload request is too large for API Gateway/Lambda (about 5 MB); this is an ingestion limit, not a delivery limit. The media validator permits larger files (default 20 MB), and issue #403 proposes direct/presigned upload to bypass the request-body cap.
 - an SVG is rejected because it contains scripts
 - the type is not supported
 
@@ -134,11 +139,11 @@ Saved versions migrate one to one. **Editing sessions that did not create a vers
 
 | | Approach | Pros | Cons |
 |---|---|---|---|
-| A | Keep the external URL; report it | Page migrated as-is | Page can't be saved from the hlx6 editor until fixed |
+| A | Keep the external URL; report it | Page migrated as-is | Page can't be saved from the hlx6 editor until fixed; large uploads remain blocked until the direct-upload path exists |
 | B | Replace with a placeholder; report it | Page saves | Content changed silently on the live site at next publish |
 | C | Don't migrate the page; report it | Explicit | Page missing after migration |
 
-**Rec.** A, with a blocking pre-flight count so site owners fix them before migrating.
+**Rec.** Use the official media API for sizes it accepts. For larger images, wait for or implement the direct-upload path in issue #403; do not treat the delivery size as the constraint. Block only the affected image/page until there is a supported upload route.
 
 ---
 
@@ -174,7 +179,7 @@ Saved versions migrate one to one. **Editing sessions that did not create a vers
 
 ## 7. File names that collide after renaming
 
-**Problem.** hlx6 normalises file and folder names: lowercase, accents removed, anything not `a-z0-9` becomes `-`. da only lowercases. So `my_page.html` and `my-page.html` are two files on da but the same file on hlx6, and `My Page.html` becomes `my-page.html`.
+**Problem.** hlx6 normalises file and folder names: lowercase, accents removed, anything not `a-z0-9` becomes `-`. da only lowercases. So `my_page.html` and `my-page.html` are two files on da but the same hlx6 path. This is a storage-path collision, not a request to support move/rename operations.
 
 Names that change also break links pointing to them.
 
@@ -182,10 +187,10 @@ Names that change also break links pointing to them.
 
 | | Approach |
 |---|---|
-| A | Block the site and report; the owner renames before migrating |
-| B | Rename automatically with a suffix (`my-page-1.html`) and report |
+| A | Block the site and report; resolve the source-side collision before migration, or explicitly choose which object to omit |
+| B | Preserve both by changing the migration mapping format (for example, encode the original name) | Requires hlx6 to support a reversible path mapping |
 
-**Rec.** A for collisions (rare, needs a human choice). Renames without a collision are migrated and reported.
+**Rec.** A: stop before writing and require a human resolution. The migration does not invoke move/rename operations in hlx6; it maps each source key to its hlx6 storage path and cannot preserve two objects that normalize to the same key.
 
 ---
 

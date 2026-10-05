@@ -23,8 +23,11 @@ describe('createScope', () => {
     assert.throws(() => createScope({ ...spec, hlx6Site: 'x*' }), /Invalid hlx6Site/);
     assert.throws(() => createScope({ ...spec, hlx6ContentBusId: '*' }), /Invalid hlx6ContentBusId/);
   });
-  it('rejects writing into the da media folder', () => {
-    assert.throws(() => createScope({ ...spec, hlx6ContentBusId: DA_MEDIA }), /must differ/);
+  it('allows the da and hlx6 contentBusIds to be identical for stable-ID migration', () => {
+    const stableScope = createScope({ ...spec, hlx6ContentBusId: DA_MEDIA });
+    assert.deepEqual(stableScope.write, [
+      { bucket: 'helix-source-bus', prefix: 'kptdobe/sample-content-hlx6-migrated/' },
+    ]);
   });
 });
 

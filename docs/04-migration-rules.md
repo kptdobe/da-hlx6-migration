@@ -19,8 +19,8 @@ Consequences:
 - **Order** is preserved: version ULIDs are generated from the original timestamps.
 - **Dates** on hlx6 show the migration time until hlx6 supports an override.
 
-Proposed hlx6 change, to be raised once the rules are reviewed: honor an optional user metadata date, falling back to `LastModified`:
-- `last-modified` on current objects, for GET/HEAD
+Proposed hlx6 change: honor optional user metadata, falling back to `LastModified`:
+- `doc-last-modified` on current objects, for GET/HEAD
 - `version-date` on version objects, for the versions list
 
 The folder listing can't use it without a HEAD per item; that is acceptable or can be solved separately.
@@ -32,10 +32,10 @@ The migration writes these metadata keys **now**, so no second pass is needed on
 |---|---|---|---|---|---|
 | R1 | `{o}/{s}{p}.html` | `{o}/{s}{toHlx6Path(p)}.html` | rewrite images (R9), gzip | common (§3) | |
 | R2 | `{o}/{s}{p}.json` | idem `.json` | as-is, gzip | common | byte-identical after gunzip |
-| R3 | `{o}/{s}{p}.{gif,ico,jpeg,jpg,mp4,pdf,png,svg}` | idem | as-is, gzip | common | hlx6 gzips media too |
+| R3 | `{o}/{s}{p}.{gif,ico,jpeg,jpg,mp4,pdf,png,svg}` | idem | raw bytes, uncompressed; do not set `Content-Encoding: gzip` | common | even if the source sample object is gzip-encoded, decode before migration |
 | R4 | `{o}/{s}{f}.props` | `{o}/{s}{toHlx6Path(f)}/.props` | `{}`, gzip, `application/json` | common | only where da has a marker; implicit folders stay implicit |
 | R5 | `{o}/{s}/.trash/{name}` | `{o}/{s}/.trash/{name}` (keep the dated name) | per R1-R4 | common + `doc-path` = `/` + `sitePath(path)` | `doc-id` kept from the same da `id`, so its versions stay attached |
-| R6 | `.da-versions/{id}/{vid}.{ext}` | `{o}/{s}/.versions/{docId(id)}/{versionUlid}` (no extension) | as-is (+ R9 for html), gzip | §4 | |
+| R6 | `.da-versions/{id}/{vid}.{ext}` | `{o}/{s}/.versions/{docId(id)}/{versionUlid}` (no extension) | preserve raw body; text may be gzip-encoded, binary media remains uncompressed | §4 | |
 | R7 | `.da-versions/{id}/` with no live or trash doc | same as R6 (orphan versions) | | §4 | hlx6 behaves the same after the trash is emptied |
 | R8 | `.da-versions/{id}/audit*.txt` | not written to the source bus | - | - | used as input for §4; raw files archived with the migration manifest. **Review**: acceptable to drop edit-only events from the UI? |
 | R9 | `<img src>`, `<source srcset>` in html | - | rewrite to **relative** `./media_{hash}.{ext}` after uploading the image to the hlx6 site's media bus with the **media API** (see §8) | - | covers previewed and never-previewed pages the same way |
@@ -48,11 +48,11 @@ The migration writes these metadata keys **now**, so no second pass is needed on
 |---|---|
 | `doc-id` | `docId(da id)`: ULID with **time** = earliest known event of the doc (first audit line, else `timestamp`) and **random part** = hash(da `id`). Deterministic, so re-runs are idempotent |
 | `last-modified-by` | `users[0].email` from the da metadata, else `anonymous` |
-| `uncompressed-length` | byte length of the body before gzip |
-| `last-modified` | ISO of the da `timestamp` (see §1; ignored by hlx6 until supported) |
+| `uncompressed-length` | byte length of the original body (before optional text gzip) |
+| `doc-last-modified` | ISO of the da `timestamp` (see §1; ignored by hlx6 until supported) |
 | `da-id` | da `id`, for traceability |
 
-Headers: `Content-Type` from the extension (hlx6 `CONTENT_TYPES`), `Content-Encoding: gzip`.
+Headers: `Content-Type` from the extension (hlx6 `CONTENT_TYPES`). Text/source bodies may be gzip-encoded; never gzip binary media.
 
 ## 4. Version metadata
 
@@ -106,19 +106,17 @@ Implemented in `bin/preflight.js`.
 ### The official procedure
 helix-api-service exposes `POST https://api.aem.live/{org}/sites/{hlx6-site}/media/` (`src/media/handler.js`, permission `media:upload`). It accepts either the raw bytes (`Content-Type: image/...`) or `{"url": "..."}`. It:
 1. detects the type and rejects unsupported types (415)
-2. preprocesses and validates the file: size limits per type (site config `limits.preview.*`), and SVG checked for scripts and event handlers (409 when rejected)
+2. preprocesses and validates the file: size limits per type (site config `limits.preview.*`), and SVG checked for scripts and event handlers (409 when rejected). The regular request body is limited to about 5 MB by API Gateway/Lambda; this is an upload-path limit, not a media delivery limit. See [helix-api-service issue #403](https://github.com/adobe/helix-api-service/issues/403) for the proposed direct/presigned upload path.
 3. stores it with `@adobe/helix-mediahandler` (`storeBlob`) under `{hlx6-content-bus-id}/{hash}`, with `alg`, `agent`, `width`, `height` metadata, and the R2 mirror if the deployment enables it. An existing hash is not uploaded again.
 4. returns `{ uri: "https://main--{site}--{org}.aem.page/media_{hash}.{ext}", meta }`
 
-The hash is `"1" + sha1(contentLength + first 8 KiB)` (`src/media.js` `mediaHash`, verified against a real image). It is the same on every site, so a da page and its migrated version reference the same `media_{hash}` name, only in a different folder.
+The hash is `"1" + sha1(contentLength + first 8 KiB)` (`src/media.js` `mediaHash`, verified against a real image). It is the same on every site. With the team's stable `contentBusId` decision, a da page's previewed media and the hlx6 project use the same `{contentBusId}/{hash}` object; reuse it if present. If the object is absent (for example, the page was never previewed), upload through the media API into that same site-scoped folder.
 
 ### Per image
-1. Get the bytes:
-   - the page was previewed on da: read `helix-media-bus/{da-content-bus-id}/{hash}`. The hash comes from the da preview HTML or from the bytes.
-   - never previewed: fetch the original URL (`raw.githubusercontent.com`, `content.da.live` with the DA token, etc.)
-2. `POST` the bytes to the hlx6 media API. Bytes are preferred over `{url}`: no 5 s fetch timeout, no auth to forward, same result.
-3. Rewrite `src`/`srcset` to `./media_{hash}.{ext}`, using the `uri` returned by the API.
-4. On failure (fetch 404, 409 validation, 415 type): log it in the manifest and report it. What goes into the page is a decision (see below).
+1. Compute the media hash from the available bytes and check `helix-media-bus/{hlx6-content-bus-id}/{hash}`. If present, reuse it without uploading.
+2. If missing, fetch the image bytes from the original URL (`raw.githubusercontent.com`, `content.da.live` with the DA token, etc.) and `POST` the bytes to the hlx6 media API. Bytes are preferred over `{url}`: no 5 s fetch timeout, no auth to forward, same result.
+3. Rewrite `src`/`srcset` to `./media_{hash}.{ext}`, using the `uri` returned by the API or the verified existing hash.
+4. On failure (fetch 404, upload-size limit, 409 validation, 415 type): log it in the manifest and report it. What goes into the page is a decision (see below).
 
 ### Why the API and not a direct media-bus write
 - Same validation as an author upload (size limits, SVG sanitization), so we never store a file hlx6 would refuse.
@@ -126,7 +124,7 @@ The hash is `"1" + sha1(contentLength + first 8 KiB)` (`src/media.js` `mediaHash
 - The migration role needs **no write access to `helix-media-bus`**, only read on the da folder (§IAM).
 - Volume is bounded: one call per **distinct** image per site, and existing hashes are skipped server-side.
 
-If throughput becomes a problem on large sites, a server-side copy from the da folder (previewed images only) is the fallback. It needs the `ReadWriteTargetMedia` statement back in the role.
+With a stable `contentBusId`, previewed da images are already in the target site's media folder; no media-bucket copy is needed. For never-previewed images above the regular endpoint's request-size limit, the migration needs the direct/presigned upload flow in issue #403 before it can ingest them. The migration role still needs no media-bucket write permission.
 
 ### Decision needed
 Images that cannot be uploaded (broken URL, too large, rejected SVG):

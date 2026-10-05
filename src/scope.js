@@ -25,7 +25,6 @@ export function createScope({
   [['daContentBusId', daContentBusId], ['hlx6ContentBusId', hlx6ContentBusId]].forEach(([k, v]) => {
     if (!CONTENT_BUS_ID.test(v || '')) throw new Error(`Invalid ${k}: ${v}`);
   });
-  if (daContentBusId === hlx6ContentBusId) throw new Error('da and hlx6 media folders must differ');
   return Object.freeze({
     org,
     daSite,

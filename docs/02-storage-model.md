@@ -22,7 +22,7 @@ Everything in this document must be confirmed on real data in Phase 3 (see [03](
 
 | Aspect | da | hlx6 |
 |---|---|---|
-| Body encoding | Raw | **gzip** (`ContentEncoding: gzip`) for **every** type, including images (confirmed in Phase 3) |
+| Body encoding | Raw | Text/source objects are commonly gzip-encoded. Encoding is not mandatory; binary media should be stored uncompressed (no `Content-Encoding: gzip`). The sample's compressed image objects are observed legacy state, not a migration requirement. |
 | Content-Type | From the request (`type`) | From the extension |
 | Metadata | `id` (UUID), `version` (UUID, html/json only), `users` (JSON array of `{email}`), `timestamp` (epoch ms string), `path` (`site/path`), `preparsingstore` | `doc-id` (**ULID**), `last-modified-by` (email or `anonymous`), `uncompressed-length` |
 | Last modified | `timestamp` metadata **and** S3 LastModified | **S3 `LastModified` only**, which is not settable by a writer |
@@ -48,15 +48,15 @@ Everything in this document must be confirmed on real data in Phase 3 (see [03](
 | Op | da | hlx6 |
 |---|---|---|
 | Delete | **da-admin: hard delete**. But **da-live never hard-deletes**: it moves the item to `/.trash/{name}-{iso-date}.{ext}` (client-side, `da-list.js`), so `id` and versions stay attached. A hard delete only happens from inside `.trash` | **Soft delete**. The object gets a version (`operation=delete`), then is moved to `{org}/{site}/.trash/{name}` (or `.trash/{folder}/...`) with metadata `doc-path`. Name collisions get a `-{base36 ts}` suffix. Deleting inside `.trash` is a hard delete; versions are kept |
-| Move | Copy + delete; `id` is kept | Copy (keeps `doc-id`) + remove |
+| Move / rename | da supports copy + delete; `id` is kept | Out of the supported hlx6 authoring workflow per team decision. Migration transfers current objects at their resulting paths; it does not replay move/rename operations. |
 | Copy | New `id`, new version and a new audit entry | New `doc-id` (ULID) |
 
 ## 5. Media / binaries
 
 | Aspect | da | hlx6 |
 |---|---|---|
-| Image upload in editor | Stored in R2 next to the doc (e.g. `.{docname}/image.png`), referenced as `https://content.da.live/{org}/{site}/...` | Interned into **`helix-media-bus`** (content-hashed `media_{hash}`), referenced by `./media_...` or `https://main--{site}--{org}.aem.page/media_...`. Size cap 4.5 MB (Lambda body) vs 20 MB on da |
-| Standalone binaries | Any type in R2 | Only the allowed extension list, stored gzip in the source bus |
+| Image upload in editor | Stored in R2 next to the doc (e.g. `.{docname}/image.png`), referenced as `https://content.da.live/{org}/{site}/...` | Interned into **`helix-media-bus`** (content-hashed `media_{hash}`), referenced by `./media_...`. The regular media API upload request is limited to about 5 MB by API Gateway/Lambda; this is an ingestion limit, not a delivery limit (see [issue #403](https://github.com/adobe/helix-api-service/issues/403)). |
+| Standalone binaries | Any type in R2 | Only the allowed extension list; binary bodies should be stored uncompressed |
 
 ## 6. Config, permissions, collab
 
@@ -70,7 +70,7 @@ Everything in this document must be confirmed on real data in Phase 3 (see [03](
 
 **hlx6 `/source` handlers** (`src/source/*`): **no non-S3 side effects**. There are no SQS, SNS, EventBridge, DynamoDB, audit-batch, index or purge calls in the write paths.
 - Preview reads the source bus lazily (`contentproxy/source/sourcebus.js`) and interns images at preview time.
-- **Conclusion:** writing directly to `helix-source-bus` (+ `helix-media-bus`) is equivalent to API writes, *provided* we reproduce the object metadata (`doc-id`, `last-modified-by`, `uncompressed-length`), gzip encoding, `.props` markers and version metadata.
+- **Conclusion:** writing directly to `helix-source-bus` is equivalent to source API writes only if we reproduce object metadata (`doc-id`, `last-modified-by`, `uncompressed-length`), `.props` markers and version metadata. Do not gzip binary media. Image ingestion should use the media API (including its validation and storage bookkeeping).
 
 **da-admin**: the only side effect is the `notifyCollab` call on delete and update. It is irrelevant for migration reads.
 
