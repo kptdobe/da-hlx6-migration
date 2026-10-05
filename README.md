@@ -22,9 +22,7 @@ to the **hlx6** backend (helix-api-service, AWS S3 "source bus").
 - hlx6: https://da.live/#/kptdobe/sample-content-hlx6
 
 ## Usage (all read-only)
-Credentials:
-- da (R2): a `.dev.vars` file at the repo root (`S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_DEF_URL`), or pass `--dev-vars`
-- hlx6 (S3): the default AWS credential chain
+Credentials and runtime settings are loaded from the local, git-ignored `.dev.vars` file; its non-empty values take precedence over shell variables. It holds the R2 read-only token, AWS profile/role settings, and target media API token. Keep its mode owner-only (`chmod 600 .dev.vars`).
 
 ```bash
 npm install
@@ -34,3 +32,11 @@ node bin/compare.js <da-dump> <hlx6-dump>       # structural diff
 node bin/preflight.js -v <org/site>             # migration blockers for a da site
 npm test && npm run lint
 ```
+
+The sample migration command is pinned to `kptdobe/sample-content-da` → `kptdobe/sample-content-hlx6-migrated` and is dry-run by default:
+
+```bash
+node bin/migrate.js --refresh-source
+```
+
+Execution additionally requires the dedicated `da-hlx6-migration` AWS role, the R2 read-only credentials, and a target-scoped `media:upload` token. Put all of these in `.dev.vars`, then run `node bin/migrate.js --refresh-source -x`. It has no delete path and refuses unplanned target objects.

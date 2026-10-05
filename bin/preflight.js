@@ -13,7 +13,7 @@ Exits with code 2 when a blocking check fails.
 Options:
       --dump       use a local dump (bin/dump.js -b da) instead of scanning R2
       --bucket     R2 bucket          (default: ${BACKENDS.da.bucket})
-      --dev-vars   R2 credentials file (default: $DA_DEV_VARS or .dev.vars)
+  -e, --env-file  local env file (default: .dev.vars)
   -v, --verbose    list affected items
   -h, --help`;
 
@@ -22,7 +22,7 @@ const { values, positionals } = parseArgs({
   options: {
     dump: { type: 'string' },
     bucket: { type: 'string' },
-    'dev-vars': { type: 'string' },
+    'env-file': { type: 'string', short: 'e', default: '.dev.vars' },
     verbose: { type: 'boolean', short: 'v' },
     help: { type: 'boolean', short: 'h' },
   },
@@ -37,7 +37,7 @@ if (values.help || (!values.dump && (!org || !site))) {
 const entries = values.dump
   ? await readDump(values.dump)
   : await scanSite({
-    client: createClient('da', { devVarsPath: values['dev-vars'] }),
+    client: createClient('da', { devVarsPath: values['env-file'] }),
     backend: 'da',
     bucket: values.bucket || BACKENDS.da.bucket,
     org,

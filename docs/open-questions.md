@@ -16,7 +16,7 @@ Each question below states the problem, why it matters, and the options. **Rec.*
 | # | Topic | Blocks the migration? | Needs a decision from | Status |
 |---|---|---|---|---|
 | 1 | [Site cutover: keep the content bus id stable](#1-site-cutover-keep-the-content-bus-id-stable) | **yes** | helix team | mechanism open; decision made |
-| 2 | [Original dates are lost](#2-original-dates-are-lost) | no (data kept, not displayed) | helix team, product | open |
+| 2 | [Original dates are lost](#2-original-dates-are-lost) | no (data kept, not displayed) | helix team, product | issue filed: [#458](https://github.com/adobe/helix-api-service/issues/458) |
 | 3 | [Edit history without a saved version](#3-edit-history-without-a-saved-version) | no | product | open |
 | 4 | [Images that cannot be uploaded](#4-images-that-cannot-be-uploaded) | per site | product | open |
 | 5 | [Comments](#5-comments) | per site | product | deferred |
@@ -81,7 +81,7 @@ No choice has been made about the implementation; the team decision is only that
 
 ## 2. Original dates are lost
 
-**Problem.** hlx6 does not store dates in metadata. It shows the S3 `LastModified` value, which S3 sets at write time and no client can change. Every migrated document and version would show the **migration date**.
+**Problem.** The migration stores original dates as `doc-last-modified` and `version-date` metadata, but hlx6 currently ignores those fields when rendering dates. It shows S3 `LastModified`, which S3 sets at write time and no client can change. Consequently migrated documents and versions show the **migration date**.
 
 | Date shown in da.live | hlx6 reads it from | Can the migration set it? |
 |---|---|---|
@@ -102,6 +102,8 @@ No choice has been made about the implementation; the team decision is only that
 | C | B, plus the listing reads metadata | Complete | Listing cost |
 
 **Rec.** B. The migration writes the original dates in metadata now, so they are preserved whatever is decided.
+
+**Tracking issue.** [adobe/helix-api-service#458](https://github.com/adobe/helix-api-service/issues/458) requests metadata-date fallbacks for source GET/HEAD, file listings and version history.
 
 ---
 

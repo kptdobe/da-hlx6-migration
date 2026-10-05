@@ -5,7 +5,7 @@
       "Sid": "AssumeOnlyWithMigrationScope",
       "Effect": "Allow",
       "Principal": {
-        "AWS": "arn:aws:iam::118435662149:role/<OPERATOR_ROLE_ALLOWED_TO_RUN_MIGRATIONS>"
+        "AWS": "arn:aws:iam::118435662149:role/klam-master-role-YKXtun5QtnwiyTU"
       },
       "Action": ["sts:AssumeRole", "sts:TagSession"],
       "Condition": {
@@ -19,12 +19,12 @@
         "ForAllValues:StringEquals": {
           "aws:TagKeys": ["org", "da-site", "hlx6-site", "da-content-bus-id", "hlx6-content-bus-id"]
         },
-        "StringNotLike": {
-          "aws:RequestTag/org": "*/*",
-          "aws:RequestTag/da-site": "*/*",
-          "aws:RequestTag/hlx6-site": "*/*",
-          "aws:RequestTag/da-content-bus-id": "*/*",
-          "aws:RequestTag/hlx6-content-bus-id": "*/*"
+        "StringEquals": {
+          "aws:RequestTag/org": "kptdobe",
+          "aws:RequestTag/da-site": "sample-content-da",
+          "aws:RequestTag/hlx6-site": "sample-content-hlx6-migrated",
+          "aws:RequestTag/da-content-bus-id": "cdb7c31a0884cd980ae35142093dbd9e12dd50a3ad8f106e472d50255a8",
+          "aws:RequestTag/hlx6-content-bus-id": "8a228067304382d0717c282ae08947b512ada27852b0c144dc9ba0afce4"
         }
       }
     }

@@ -19,7 +19,7 @@ Consequences:
 - **Order** is preserved: version ULIDs are generated from the original timestamps.
 - **Dates** on hlx6 show the migration time until hlx6 supports an override.
 
-Proposed hlx6 change: honor optional user metadata, falling back to `LastModified`:
+Proposed hlx6 change, tracked in [adobe/helix-api-service#458](https://github.com/adobe/helix-api-service/issues/458): honor optional user metadata, falling back to `LastModified`:
 - `doc-last-modified` on current objects, for GET/HEAD
 - `version-date` on version objects, for the versions list
 

@@ -32,7 +32,7 @@ The prod bucket names must be confirmed from the deployed `HELIX_BUCKET_NAMES`.
 | `encoding/*` | gzip detection and fixing | Reference only: hlx6 stores gzip bodies |
 
 ## Gate before Phase 3
-Read-only access verified on both sides (2026-10-01). R2 credentials: `.dev.vars` at the repo root (git-ignored, symlink to da-magic's) or `--dev-vars` / `$DA_DEV_VARS`.
+Read-only access verified on both sides (2026-10-01). Migration credentials and runtime settings belong in this repo's local, git-ignored `.dev.vars`; do not symlink it to da-magic or another project's environment file. Use `chmod 600 .dev.vars` and never commit or share its contents.
 
 ## Migration identity: one shared role, scoped per migration
 
@@ -45,7 +45,7 @@ flowchart LR
 ```
 
 Three independent layers:
-1. **Trust policy** ([infra/aws/trust-policy.json](../infra/aws/trust-policy.json)): the role can only be assumed by the operator role, and only with **all 5 tags** set, no extra tag and no `/` in a value.
+1. **Trust policy** ([infra/aws/trust-policy.json](../infra/aws/trust-policy.json)): the role can only be assumed by the KLAM operator role, with the **exact 5 tags and values for the approved sample migration**. Other sites and media IDs are denied.
 2. **Role policy** ([infra/aws/migration-role-policy.json](../infra/aws/migration-role-policy.json)): every resource is built from the tags, and a missing tag is an explicit Deny. Deleting and reconfiguring are always denied.
 3. **Code** (`src/scope.js`): validates the values (`[a-z0-9-]`, hex ids, da ≠ hlx6 media folder) and refuses any write outside the scope before calling AWS.
 
@@ -69,15 +69,12 @@ Notes:
 - The da side (R2) is read-only and does not go through this role (see below).
 
 ### Remaining risk
-Whoever can assume the role chooses the tags, so **the trust policy principal is the real security boundary**: restrict it to the operator role(s) that run migrations. A wrong but valid tag value (e.g. another existing site) would be accepted by IAM. The tooling therefore:
-- resolves `da-content-bus-id` and `hlx6-content-bus-id` from the config bus itself instead of taking them as input, and
-- refuses to write into an hlx6 site that already has content not produced by the migration (pre-flight, to be added with the writer).
+The trust policy is intentionally pinned to the three approved sample identifiers for this test. Before reusing the role for another migration, an account admin must review and update the allowed tag values. The tooling also refuses to write into an hlx6 site that contains unrecognized objects.
 
 Not verified yet: whether a `*` inside a substituted tag value acts as a wildcard. The code rejects such values, and the deny checks below test it explicitly.
 
 ### Creating it (once, by an account admin)
 ```bash
-# set the operator principal in infra/aws/trust-policy.json first
 aws iam create-role --role-name da-hlx6-migration \
   --assume-role-policy-document file://infra/aws/trust-policy.json \
   --max-session-duration 3600
@@ -97,4 +94,4 @@ Run as the operator. Assume with the test tags, then check that each of these is
 And that listing and putting into `kptdobe/sample-content-hlx6-migrated/` succeed.
 
 ### R2 (da side, read only)
-R2 API tokens can be scoped per bucket, not per prefix. Use a **new token**: "Object Read only" on `aem-content`, with an expiry. Do not use the da-magic token, which has broader rights. Store it in this repo's `.dev.vars` (git-ignored). The tooling never writes to R2: there is no R2 write path in the code.
+R2 API tokens can be scoped per bucket, not per prefix. Use a **new token**: "Object Read only" on `aem-content`, with an expiry. Do not reuse the da-magic token, which has broader rights. Store its `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` and `S3_DEF_URL` in this repo's `.dev.vars`. The tooling never writes to R2: there is no R2 write path in the code.

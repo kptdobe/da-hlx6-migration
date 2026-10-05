@@ -64,6 +64,21 @@ export function parseDevVars(content) {
   return vars;
 }
 
+export function applyDevVars(content, target = process.env) {
+  const vars = parseDevVars(content);
+  Object.entries(vars).forEach(([key, value]) => {
+    if (value !== '') target[key] = value;
+  });
+  if (vars.AWS_PROFILE && !(vars.AWS_ACCESS_KEY_ID && vars.AWS_SECRET_ACCESS_KEY)) {
+    delete target.AWS_ACCESS_KEY_ID;
+    delete target.AWS_SECRET_ACCESS_KEY;
+    delete target.AWS_SESSION_TOKEN;
+  } else if (vars.AWS_ACCESS_KEY_ID && vars.AWS_SECRET_ACCESS_KEY) {
+    delete target.AWS_PROFILE;
+  }
+  return vars;
+}
+
 function httpHandler() {
   return new NodeHttpHandler({
     httpsAgent: new https.Agent({ maxSockets: 200, keepAlive: true }),
@@ -81,9 +96,9 @@ function httpHandler() {
  */
 export function createClient(backend, opts = {}) {
   if (backend === 'da') {
-    const path = opts.devVarsPath || process.env.DA_DEV_VARS || '.dev.vars';
+    const path = opts.devVarsPath || '.dev.vars';
     if (!fs.existsSync(path)) {
-      throw new Error(`R2 credentials not found: ${path} (set DA_DEV_VARS or use --dev-vars)`);
+      throw new Error(`R2 credentials not found: ${path} (use --env-file)`);
     }
     const env = parseDevVars(fs.readFileSync(path, 'utf8'));
     return new S3Client({

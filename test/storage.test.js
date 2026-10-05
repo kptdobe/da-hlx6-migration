@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  parseDevVars, listAll, getObject, headObject, createClient, putObject,
+  parseDevVars, applyDevVars, listAll, getObject, headObject, createClient, putObject,
 } from '../src/storage.js';
 import { createScope } from '../src/scope.js';
 import { fakeClient } from './fixtures/fake-client.js';
@@ -13,6 +13,35 @@ describe('parseDevVars', () => {
   });
   it('keeps "=" inside values and strips surrounding quotes', () => {
     assert.deepEqual(parseDevVars('SECRET="a=b=c"'), { SECRET: 'a=b=c' });
+  });
+});
+
+describe('applyDevVars', () => {
+  it('loads file values over shell values and selects the configured AWS profile', () => {
+    const env = {
+      AWS_REGION: 'eu-west-1',
+      AWS_PROFILE: 'ambient-profile',
+      AWS_ACCESS_KEY_ID: 'ambient-key',
+      AWS_SECRET_ACCESS_KEY: 'ambient-secret',
+      AWS_SESSION_TOKEN: 'ambient-token',
+    };
+    applyDevVars('AWS_REGION=us-east-1\nHLX6_MEDIA_TOKEN=local-token\nEMPTY=\n', env);
+    assert.equal(env.AWS_REGION, 'us-east-1');
+    assert.equal(env.AWS_PROFILE, 'ambient-profile');
+    assert.equal(env.AWS_ACCESS_KEY_ID, 'ambient-key');
+    assert.equal(env.HLX6_MEDIA_TOKEN, 'local-token');
+    applyDevVars('AWS_PROFILE=default\n', env);
+    assert.equal(env.AWS_PROFILE, 'default');
+    assert.equal(env.AWS_ACCESS_KEY_ID, undefined);
+    assert.equal(env.AWS_SECRET_ACCESS_KEY, undefined);
+    assert.equal(env.AWS_SESSION_TOKEN, undefined);
+  });
+  it('selects static AWS keys instead of an ambient profile when the file provides keys', () => {
+    const env = { AWS_PROFILE: 'ambient-profile' };
+    applyDevVars('AWS_ACCESS_KEY_ID=file-key\nAWS_SECRET_ACCESS_KEY=file-secret\nAWS_SESSION_TOKEN=file-token\n', env);
+    assert.equal(env.AWS_PROFILE, undefined);
+    assert.equal(env.AWS_ACCESS_KEY_ID, 'file-key');
+    assert.equal(env.AWS_SECRET_ACCESS_KEY, 'file-secret');
   });
 });
 

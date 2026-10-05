@@ -12,7 +12,7 @@ Options:
   -b, --backend    da (R2) or hlx6 (S3)                       (required)
   -o, --out        output folder              (default: analysis/<backend>/<org>/<site>)
       --bucket     bucket override            (default: ${BACKENDS.da.bucket} / ${BACKENDS.hlx6.bucket})
-      --dev-vars   R2 credentials file for da (default: $DA_DEV_VARS or .dev.vars)
+  -e, --env-file  local env file for da (default: .dev.vars)
       --no-bodies  only fetch metadata (HEAD)
   -c, --concurrency                           (default: 20)
   -h, --help`;
@@ -23,7 +23,7 @@ const { values, positionals } = parseArgs({
     backend: { type: 'string', short: 'b' },
     out: { type: 'string', short: 'o' },
     bucket: { type: 'string' },
-    'dev-vars': { type: 'string' },
+    'env-file': { type: 'string', short: 'e', default: '.dev.vars' },
     'no-bodies': { type: 'boolean', default: false },
     concurrency: { type: 'string', short: 'c', default: '20' },
     help: { type: 'boolean', short: 'h' },
@@ -39,7 +39,7 @@ if (values.help || !org || !site || !BACKENDS[values.backend]) {
 const backend = values.backend;
 const bucket = values.bucket || BACKENDS[backend].bucket;
 const outDir = values.out || path.join('analysis', backend, org, site);
-const client = createClient(backend, { devVarsPath: values['dev-vars'] });
+const client = createClient(backend, { devVarsPath: values['env-file'] });
 
 console.log(`Scanning ${backend} s3://${bucket}/${org}/${site}/ ...`);
 const entries = await scanSite({
