@@ -92,4 +92,21 @@ describe('image URL handling', () => {
     assert.match(result, /srcset="\.\/media_a\.jpg 1x, \.\/media_b\.jpg 2x"/);
     assert.match(result, /src="\.\/media_existing\.png"/);
   });
+
+  it('rewrites same-site media delivery URLs to relative paths', () => {
+    const source = '<main><img src="https://main--sample--kptdobe.aem.page/media_image.jpg#width=320"><source srcset="https://main--sample--kptdobe.aem.live/media_other.png 2x"></main>';
+    const result = rewriteImageUrls(source, new Map(), 'kptdobe', 'sample');
+
+    assert.match(result, /src="\.\/media_image\.jpg#width=320"/);
+    assert.match(result, /srcset="\.\/media_other\.png 2x"/);
+  });
+
+  it('keeps absolute media URLs for other sites and non-media paths', () => {
+    const source = '<main><img src="https://main--other--kptdobe.aem.page/media_image.jpg"><img src="https://main--sample--other.aem.live/media_image.jpg"><img src="https://main--sample--kptdobe.aem.page/images/image.jpg"></main>';
+    const result = rewriteImageUrls(source, new Map(), 'kptdobe', 'sample');
+
+    assert.match(result, /https:\/\/main--other--kptdobe\.aem\.page\/media_image\.jpg/);
+    assert.match(result, /https:\/\/main--sample--other\.aem\.live\/media_image\.jpg/);
+    assert.match(result, /https:\/\/main--sample--kptdobe\.aem\.page\/images\/image\.jpg/);
+  });
 });

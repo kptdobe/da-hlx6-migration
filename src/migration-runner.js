@@ -72,9 +72,9 @@ async function prepareImages(objects, { scope, mediaToken, daSourceToken, fetchI
   return replacements;
 }
 
-function prepareObject(object, replacements) {
+function prepareObject(object, replacements, scope) {
   const body = object.contentType === 'text/html'
-    ? Buffer.from(rewriteImageUrls(object.body.toString('utf8'), replacements))
+    ? Buffer.from(rewriteImageUrls(object.body.toString('utf8'), replacements, scope.org, scope.hlx6Site))
     : object.body;
   return {
     ...object,
@@ -118,7 +118,7 @@ export async function runMigration(plan, {
   const replacements = await prepareImages(plan.objects, {
     scope, mediaToken, daSourceToken, fetchImpl,
   });
-  const objects = plan.objects.map((object) => prepareObject(object, replacements));
+  const objects = plan.objects.map((object) => prepareObject(object, replacements, scope));
   const ranks = [...new Set(objects.map((object) => writeRank(object.kind)))].sort((a, b) => a - b);
   const results = [];
   for (const rank of ranks) {
