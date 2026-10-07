@@ -53,7 +53,7 @@ describe('uploadImage', () => {
     await assert.rejects(uploadImage('https://images.example/a.jpg', {
       apiUrl: 'https://api.aem.live/org/sites/target/media/',
       fetchImpl: async () => response(),
-    }), /HLX6_MEDIA_TOKEN/);
+    }), /API token/);
     let calls = 0;
     await assert.rejects(uploadImage('https://images.example/large.jpg', {
       apiUrl: 'https://api.aem.live/org/sites/target/media/',

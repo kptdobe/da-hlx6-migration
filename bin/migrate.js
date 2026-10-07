@@ -99,15 +99,15 @@ if (config.content?.source?.url !== expectedSourceUrl) {
   throw new Error('Target source URL does not match the approved test site');
 }
 
-const daConfigToken = process.env.DA_CONFIG_TOKEN || execFileSync(
+const apiToken = process.env.DA_CONFIG_TOKEN || execFileSync(
   process.env.DA_AUTH_CLI || path.join(os.homedir(), 'work/dev/helix/da/da-auth/src/cli.js'),
   ['token'],
   { encoding: 'utf8', stdio: ['inherit', 'pipe', 'inherit'] },
 ).trim();
 const configOptions = {
   scope,
-  daConfigToken,
-  configToken: process.env.HLX6_CONFIG_TOKEN,
+  daConfigToken: apiToken,
+  configToken: apiToken,
 };
 let projectConfig = await migrateProjectConfig(configOptions);
 
@@ -117,8 +117,8 @@ const result = await runMigration(plan, {
   scope,
   execute: values.execute,
   overwrite: values.overwrite,
-  mediaToken: process.env.HLX6_MEDIA_TOKEN,
-  daSourceToken: process.env.DA_MEDIA_SOURCE_TOKEN,
+  mediaToken: apiToken,
+  daSourceToken: apiToken,
   onProgress: ({ key, status }) => console.log(`${status} ${key}`),
 });
 

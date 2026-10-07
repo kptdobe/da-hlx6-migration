@@ -154,7 +154,7 @@ describe('runMigration', () => {
         write: [{ bucket: 'helix-source-bus', prefix: 'kptdobe/sample-content-hlx6-migrated/' }],
       },
       execute: true,
-    }), /HLX6_MEDIA_TOKEN/);
+    }), /API token/);
     assert.equal(client.writes.length, 0);
   });
 

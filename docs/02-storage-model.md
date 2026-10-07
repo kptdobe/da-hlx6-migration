@@ -16,7 +16,7 @@ Everything in this document must be confirmed on real data in Phase 3 (see [03](
 | Case | **Whole path lowercased** (`daCtx.js`: `pathname.toLowerCase()`) | Basename **sanitized** by `sanitizePath()` (helix-shared-string `sanitizeName`: lowercase, non `[a-z0-9]` → `-`). PUT rejects non-sanitized paths with 400 |
 | Allowed extensions | Any | Only `.gif .html .ico .jpeg .jpg .json .mp4 .pdf .png .svg` (`source/utils.js` `CONTENT_TYPES`), otherwise **415** |
 | Folder marker | Sibling object `{org}/{site}/{folder}.props` | Child object `{org}/{site}/{folder}/.props` (body `{}`, `application/json`) |
-| Hidden / reserved | `.da-versions/`, `*.props`, `.da/` (e.g. `.da/comments/{docId}`) | `.versions/`, `.trash/`, `.props` |
+| Hidden / reserved | `.da-versions/`, `*.props`, `.da/` (e.g. `.da/comments/{docId}`; `/.da/config.json` is the migration exception) | `.versions/`, `.trash/`, `.props`, migrated `/.da/config.json` |
 
 ## 2. Document object
 

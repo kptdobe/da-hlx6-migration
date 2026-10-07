@@ -16,7 +16,7 @@ export async function uploadImage(imageUrl, {
   daSourceToken,
   fetchImpl = fetch,
 }) {
-  if (!mediaToken) throw new Error('HLX6_MEDIA_TOKEN is required to upload images');
+  if (!mediaToken) throw new Error('An API token is required to upload images');
 
   const imageHeaders = {};
   if (daSourceToken && new URL(imageUrl).hostname.endsWith('content.da.live')) {

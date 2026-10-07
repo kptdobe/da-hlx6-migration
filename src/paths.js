@@ -25,6 +25,8 @@ export function splitExt(name) {
  * @returns {string}
  */
 export function toHlx6Path(path) {
+  // Preserve this DA-owned config file at its literal hidden path.
+  if (path === '/.da/config.json') return path;
   const segments = path.split('/').slice(1);
   const file = segments.pop();
   const folders = segments.map(sanitizeName);

@@ -144,7 +144,7 @@ describe('migrateProjectConfig', () => {
 
   it('requires a target config token when DA config exists', async () => {
     const fake = api();
-    await assert.rejects(migrateProjectConfig({ scope, execute: true, ...fake }), /HLX6_CONFIG_TOKEN/);
+    await assert.rejects(migrateProjectConfig({ scope, execute: true, ...fake }), /API token/);
     assert.equal(fake.calls.length, 1);
   });
 

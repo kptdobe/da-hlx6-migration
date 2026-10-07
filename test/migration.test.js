@@ -39,6 +39,7 @@ describe('buildMigrationPlan', () => {
     const rows = [
       entry('/index.html', '<html><main>Hi</main></html>', { id: 'doc-id', timestamp: '1790864889099', users: '[{"email":"author@example.com"}]' }),
       entry('/sample.json', '{"data":[]}', { id: 'sheet-id', timestamp: '1790864889099' }),
+      entry('/.da/config.json', '{"contentBusId":"fixed-id"}', { id: 'da-config-id' }),
       entry('/images/a.jpg', 'imagebytes', { id: 'media-id' }),
       entry('/folder.props', '{}'),
       entry('/.trash/old.html', '<main>old</main>', { id: 'trash-id', path: 'sample-content-da/original.html', timestamp: '1790864889099' }),
@@ -52,6 +53,11 @@ describe('buildMigrationPlan', () => {
     assert.equal(doc.contentEncoding, 'gzip');
     assert.equal(doc.metadata['last-modified-by'], 'author@example.com');
     assert.ok(doc.metadata['doc-id']);
+    const daConfig = bySource['kptdobe/sample-content-da/.da/config.json'];
+    assert.equal(daConfig.key, 'kptdobe/sample-content-hlx6-migrated/.da/config.json');
+    assert.equal(daConfig.contentType, 'application/json');
+    assert.equal(daConfig.contentEncoding, 'gzip');
+    assert.equal(plan.excluded.some((item) => item.key.endsWith('/.da/config.json')), false);
     const image = bySource['kptdobe/sample-content-da/images/a.jpg'];
     assert.equal(image.contentEncoding, undefined);
     assert.equal(image.contentType, 'image/jpeg');

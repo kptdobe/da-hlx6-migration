@@ -25,11 +25,11 @@ describe('applyDevVars', () => {
       AWS_SECRET_ACCESS_KEY: 'ambient-secret',
       AWS_SESSION_TOKEN: 'ambient-token',
     };
-    applyDevVars('AWS_REGION=us-east-1\nHLX6_MEDIA_TOKEN=local-token\nEMPTY=\n', env);
+    applyDevVars('AWS_REGION=us-east-1\nDA_CONFIG_TOKEN=local-token\nEMPTY=\n', env);
     assert.equal(env.AWS_REGION, 'us-east-1');
     assert.equal(env.AWS_PROFILE, 'ambient-profile');
     assert.equal(env.AWS_ACCESS_KEY_ID, 'ambient-key');
-    assert.equal(env.HLX6_MEDIA_TOKEN, 'local-token');
+    assert.equal(env.DA_CONFIG_TOKEN, 'local-token');
     applyDevVars('AWS_PROFILE=default\n', env);
     assert.equal(env.AWS_PROFILE, 'default');
     assert.equal(env.AWS_ACCESS_KEY_ID, undefined);

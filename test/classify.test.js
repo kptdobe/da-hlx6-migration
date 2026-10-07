@@ -8,6 +8,9 @@ describe('classifyDa', () => {
     assert.deepEqual(classifyDa('/sample.json'), { kind: 'sheet', path: '/sample.json' });
     assert.deepEqual(classifyDa('/images/img.jpg'), { kind: 'media', path: '/images/img.jpg' });
   });
+  it('classifies the DA config file as migratable JSON content', () => {
+    assert.deepEqual(classifyDa('/.da/config.json'), { kind: 'sheet', path: '/.da/config.json' });
+  });
   it('treats a sibling .props file as a folder marker', () => {
     assert.deepEqual(classifyDa('/folder.props'), { kind: 'folder', path: '/folder' });
     assert.deepEqual(classifyDa('/a/b.props'), { kind: 'folder', path: '/a/b' });
@@ -27,7 +30,7 @@ describe('classifyDa', () => {
   });
   it('classifies comments and other .da internals', () => {
     assert.deepEqual(classifyDa('/.da/comments/doc1/c1.json'), { kind: 'comment', docId: 'doc1' });
-    assert.deepEqual(classifyDa('/.da/config.json'), { kind: 'da-internal', path: '/.da/config.json' });
+    assert.deepEqual(classifyDa('/.da/other.json'), { kind: 'da-internal', path: '/.da/other.json' });
   });
   it('classifies trashed items with their original kind', () => {
     assert.deepEqual(

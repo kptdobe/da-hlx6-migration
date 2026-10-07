@@ -60,7 +60,7 @@ async function prepareImages(objects, { scope, mediaToken, daSourceToken, fetchI
     .filter((object) => object.contentType === 'text/html')
     .flatMap((object) => collectExternalImageUrls(object.body.toString('utf8'), scope.org, scope.hlx6Site)))];
   if (urls.length && !mediaToken) {
-    throw new Error(`External images require HLX6_MEDIA_TOKEN (${urls.length} distinct URL(s))`);
+    throw new Error(`External images require an API token (${urls.length} distinct URL(s))`);
   }
   const replacements = new Map();
   const apiUrl = `https://api.aem.live/${scope.org}/sites/${scope.hlx6Site}/media/`;

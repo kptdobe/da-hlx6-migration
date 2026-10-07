@@ -32,7 +32,7 @@ export async function migrateProjectConfig({
       throw new Error(`Invalid DA config sheet "${name}": expected a data array`);
     }
   }
-  if (!configToken) throw new Error('HLX6_CONFIG_TOKEN is required to migrate project config');
+  if (!configToken) throw new Error('An API token is required to migrate project config');
   const headers = { authorization: `Bearer ${configToken}` };
   const targetResponse = await fetchImpl(targetUrl, { headers });
   if (!targetResponse.ok) {

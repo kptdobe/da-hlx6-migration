@@ -23,6 +23,7 @@ export function classifyDa(rel) {
   if (m) return { kind: 'version', docId: m[1], versionId: splitExt(m[2]).base };
   m = rel.match(/^\/\.da\/comments\/([^/]+)\//);
   if (m) return { kind: 'comment', docId: m[1] };
+  if (rel === '/.da/config.json') return { kind: 'sheet', path: rel };
   if (rel.startsWith('/.da/')) return { kind: 'da-internal', path: rel };
   if (rel.startsWith('/.trash/')) {
     // da-live moves deleted items to /.trash/{name}-{iso-date}.{ext} (client-side, da-list.js)
