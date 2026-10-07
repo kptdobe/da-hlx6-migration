@@ -83,6 +83,39 @@ describe('inspectDestination', () => {
 });
 
 describe('runMigration', () => {
+  it('overwrites existing planned content only when explicitly requested', async () => {
+    const client = fakeClient([object.key], { [object.key]: { 'da-id': 'other' } });
+    const result = await runMigration({ objects: [object] }, {
+      client,
+      scope: {
+        ...scope,
+        write: [{ bucket: 'helix-source-bus', prefix: 'kptdobe/sample-content-hlx6-migrated/' }],
+      },
+      execute: true,
+      overwrite: true,
+    });
+    assert.equal(result.statuses.get(object.key), 'overwrite');
+    assert.equal(client.writes.length, 1);
+    assert.equal(client.writes[0].Key, object.key);
+    assert.equal(client.writes[0].IfNoneMatch, undefined);
+    assert.equal(result.results[0].status, 'written');
+  });
+
+  it('plans overwrites without writing in a dry run', async () => {
+    const client = fakeClient([object.key]);
+    const result = await runMigration({ objects: [object] }, { client, scope, overwrite: true });
+    assert.equal(result.statuses.get(object.key), 'overwrite');
+    assert.equal(client.writes.length, 0);
+  });
+
+  it('still refuses unplanned target content when overwriting', async () => {
+    const client = fakeClient(['kptdobe/sample-content-hlx6-migrated/manual.html']);
+    await assert.rejects(runMigration({ objects: [object] }, {
+      client, scope, execute: true, overwrite: true,
+    }), /unplanned objects/);
+    assert.equal(client.writes.length, 0);
+  });
+
   it('dry-runs without any PutObject calls', async () => {
     const client = fakeClient();
     const result = await runMigration({ objects: [object] }, { client, scope });

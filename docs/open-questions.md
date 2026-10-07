@@ -198,10 +198,10 @@ Names that change also break links pointing to them.
 
 ## 8. Site config and permissions
 
-**Problem.** da stores org and site config, including permissions, in Cloudflare KV (`DA_CONFIG`). hlx6 uses the helix config service. The content migration does not cover this.
+**Status.** da stores org and site config, including permissions, in Cloudflare KV (`DA_CONFIG`). The migration now copies the site's stored config into the target helix config service's `editor.da` property, after content migration. Org config is not copied, and DA permissions are not translated into helix permissions.
 
 **Questions for the helix team**
-- Is config migration part of the site cutover (see 1), or a separate step?
+- What additional org config or permission translation is required for site cutover (see 1)?
 - How do da permissions (path-based, per group) map to hlx6 permissions?
 
 ---

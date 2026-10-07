@@ -26,7 +26,7 @@ function belongsToMigration(head, object) {
     && head.metadata?.['da-source-sha256'] === sha256(object.body);
 }
 
-export async function inspectDestination(client, scope, objects) {
+export async function inspectDestination(client, scope, objects, { overwrite = false } = {}) {
   const prefix = `${scope.org}/${scope.hlx6Site}/`;
   const existing = await listAll(client, SOURCE_BUCKET, prefix);
   const planKeys = new Set(objects.map((object) => object.key));
@@ -40,6 +40,10 @@ export async function inspectDestination(client, scope, objects) {
   for (const object of objects) {
     if (!existingKeys.has(object.key)) {
       statuses.set(object.key, 'planned');
+      continue;
+    }
+    if (overwrite) {
+      statuses.set(object.key, 'overwrite');
       continue;
     }
     const head = await headObject(client, SOURCE_BUCKET, object.key);
@@ -92,18 +96,19 @@ function writeRank(kind) {
 }
 
 /**
- * Executes or plans the sample migration. No delete or overwrite operation exists.
+ * Executes or plans the sample migration. Overwrites require explicit opt-in; no deletes.
  */
 export async function runMigration(plan, {
   client,
   scope,
   execute = false,
+  overwrite = false,
   mediaToken,
   daSourceToken,
   fetchImpl,
   onProgress = () => {},
 }) {
-  const statuses = await inspectDestination(client, scope, plan.objects);
+  const statuses = await inspectDestination(client, scope, plan.objects, { overwrite });
   if (!execute) {
     return {
       dryRun: true,
@@ -131,7 +136,7 @@ export async function runMigration(plan, {
         Body: object.contentEncoding === 'gzip' ? gzipSync(object.body) : object.body,
         ContentType: object.contentType,
         Metadata: object.metadata,
-        IfNoneMatch: '*',
+        ...(!overwrite && { IfNoneMatch: '*' }),
         ...(object.contentEncoding && { ContentEncoding: object.contentEncoding }),
       };
       try {

@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { BACKENDS, applyDevVars, createClient, createMigrationClient, getObject } from '../src/storage.js';
 import { scanSite, readDump, writeDump } from '../src/dump.js';
 import { buildMigrationPlan } from '../src/migration.js';
 import { runMigration } from '../src/migration-runner.js';
+import { migrateProjectConfig } from '../src/project-config.js';
 import { createScope } from '../src/scope.js';
 
 const TEST = Object.freeze({
@@ -25,6 +28,7 @@ Pinned test migration only:
 
 Options:
   -x, --execute       write to the test target (requires scoped AWS role)
+      --overwrite     rewrite planned target content (still dry-run without -x)
   -e, --env-file      single local credentials/config file (default: .dev.vars)
       --refresh-source fetch a fresh da dump before planning (read-only R2)
       --source-dump    local da dump directory (default: ${SOURCE_DUMP})
@@ -35,6 +39,7 @@ const { values, positionals } = parseArgs({
   allowPositionals: true,
   options: {
     execute: { type: 'boolean', short: 'x' },
+    overwrite: { type: 'boolean' },
     'env-file': { type: 'string', short: 'e', default: '.dev.vars' },
     'refresh-source': { type: 'boolean' },
     'source-dump': { type: 'string', default: SOURCE_DUMP },
@@ -94,26 +99,46 @@ if (config.content?.source?.url !== expectedSourceUrl) {
   throw new Error('Target source URL does not match the approved test site');
 }
 
+const daConfigToken = process.env.DA_CONFIG_TOKEN || execFileSync(
+  process.env.DA_AUTH_CLI || path.join(os.homedir(), 'work/dev/helix/da/da-auth/src/cli.js'),
+  ['token'],
+  { encoding: 'utf8', stdio: ['inherit', 'pipe', 'inherit'] },
+).trim();
+const configOptions = {
+  scope,
+  daConfigToken,
+  configToken: process.env.HLX6_CONFIG_TOKEN,
+};
+let projectConfig = await migrateProjectConfig(configOptions);
+
 console.log(`${values.execute ? 'EXECUTE' : 'DRY RUN'} ${TEST.org}/${TEST.daSite} -> ${TEST.org}/${TEST.hlx6Site}`);
 const result = await runMigration(plan, {
   client: hlxClient,
   scope,
   execute: values.execute,
+  overwrite: values.overwrite,
   mediaToken: process.env.HLX6_MEDIA_TOKEN,
   daSourceToken: process.env.DA_MEDIA_SOURCE_TOKEN,
   onProgress: ({ key, status }) => console.log(`${status} ${key}`),
 });
 
+if (values.execute && projectConfig.status === 'planned') {
+  projectConfig = await migrateProjectConfig({ ...configOptions, execute: true });
+}
+console.log(`Project config: ${projectConfig.status}`);
+
 const report = {
   source: `${TEST.org}/${TEST.daSite}`,
   target: `${TEST.org}/${TEST.hlx6Site}`,
   dryRun: result.dryRun,
+  overwrite: Boolean(values.overwrite),
   objects: result.objects,
   imageUrls: result.imageUrls,
   excluded: plan.excluded,
   warnings: plan.warnings,
   statuses: [...result.statuses.entries()].map(([key, status]) => ({ key, status })),
   results: result.results,
+  projectConfig,
 };
 await fs.mkdir(path.dirname(values.out), { recursive: true });
 await fs.writeFile(values.out, JSON.stringify(report, null, 2));
