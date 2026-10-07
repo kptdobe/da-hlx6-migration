@@ -15,7 +15,7 @@ Each question below states the problem, why it matters, and the options. **Rec.*
 
 | # | Topic | Blocks the migration? | Needs a decision from | Status |
 |---|---|---|---|---|
-| 1 | [Site cutover: keep the content bus id stable](#1-site-cutover-keep-the-content-bus-id-stable) | **yes** | helix team | mechanism open; decision made |
+| 1 | [Site cutover: keep the content bus id stable](#1-site-cutover-keep-the-content-bus-id-stable) | **yes** | helix team | `content.fixedContentBusId` support tracked in [helix-config-storage#326](https://github.com/adobe/helix-config-storage/pull/326) |
 | 2 | [Original dates are lost](#2-original-dates-are-lost) | no (data kept, not displayed) | helix team, product | issue filed: [#458](https://github.com/adobe/helix-api-service/issues/458) |
 | 3 | [Edit history without a saved version](#3-edit-history-without-a-saved-version) | no | product | open |
 | 4 | [Images that cannot be uploaded](#4-images-that-cannot-be-uploaded) | per site | product | open |
@@ -45,6 +45,10 @@ contentBusId = sha256(content.source.url)[0..59]
 This is `updateContentSource()` in `@adobe/helix-config-storage` (3.6.0), called on every config `create()` and `update()`. A stored value that doesn't match the URL is overwritten.
 
 The current config-storage code derives the id from the content source URL, so changing the URL would normally change the id even though the site name stays the same:
+
+PR [helix-config-storage#326](https://github.com/adobe/helix-config-storage/pull/326) adds `content.fixedContentBusId` as an explicit override. When set, config-storage keeps that ID instead of deriving a new one from the source URL; when unset, the existing URL-derived behavior remains. After this support is deployed, set the override to the site's current `contentBusId` as part of switching the content source to hlx6. This preserves the existing content and media bus paths.
+
+The migration does not edit site configuration or derive content bus IDs. Supply the same ID for the DA and hlx6 scopes when preserving the bus, so media lookup and upload continue to target the existing folder.
 
 | | content source URL | contentBusId |
 |---|---|---|
