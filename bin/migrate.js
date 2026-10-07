@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
-import { execFileSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { BACKENDS, applyDevVars, createClient, createMigrationClient, getObject } from '../src/storage.js';
 import { scanSite, readDump, writeDump } from '../src/dump.js';
@@ -10,6 +8,7 @@ import { buildMigrationPlan } from '../src/migration.js';
 import { runMigration } from '../src/migration-runner.js';
 import { migrateProjectConfig } from '../src/project-config.js';
 import { createScope } from '../src/scope.js';
+import { getDaAuthToken } from '../src/auth.js';
 
 const TEST = Object.freeze({
   org: 'kptdobe',
@@ -99,11 +98,7 @@ if (config.content?.source?.url !== expectedSourceUrl) {
   throw new Error('Target source URL does not match the approved test site');
 }
 
-const apiToken = process.env.DA_CONFIG_TOKEN || execFileSync(
-  process.env.DA_AUTH_CLI || path.join(os.homedir(), 'work/dev/helix/da/da-auth/src/cli.js'),
-  ['token'],
-  { encoding: 'utf8', stdio: ['inherit', 'pipe', 'inherit'] },
-).trim();
+const apiToken = getDaAuthToken();
 const configOptions = {
   scope,
   daConfigToken: apiToken,

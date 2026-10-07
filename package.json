@@ -16,6 +16,7 @@
     "@aws-sdk/client-s3": "3.1144.0",
     "@aws-sdk/credential-providers": "3.1144.0",
     "@smithy/node-http-handler": "4.12.1",
+    "da-auth-helper": "git+https://github.com/adobe-rnd/da-auth-helper.git#1333f443d925a0240909424224aafd75c260e9d2",
     "parse5": "8.0.1"
   },
   "devDependencies": {
