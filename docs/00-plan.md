@@ -8,7 +8,7 @@ No migration code is written before the migration rules (04) and the architectur
 |---|---|
 | Version history | **Full migration** is required |
 | da-magic utils | **Copy** them into this repo (no dependency) |
-| Live migration flow (freeze, delta, cutover) | Out of scope for now |
+| Automated live delta sync | Out of scope; operator freeze, verification, and cutover flow is documented in [README](../README.md#main-migration-flow) |
 | Runtime (CLI vs AWS service) | Not decided. Core logic must stay library-shaped |
 
 ## Phases

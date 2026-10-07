@@ -21,7 +21,35 @@ to the **hlx6** backend (helix-api-service, AWS S3 "source bus").
 - da: https://da.live/#/kptdobe/sample-content-da
 - hlx6: https://da.live/#/kptdobe/sample-content-hlx6
 
-## Usage (all read-only)
+## Main migration flow
+
+`content.fixedContentBusId` keeps the existing content and media bus when the site's content source changes from DA to HLX6. The property is owned by config-storage, not this migration tool; wait until the [config-storage support](https://github.com/adobe/helix-config-storage/pull/326) is deployed before using it.
+
+1. Record the DA site's current effective `contentBusId`. After config-storage support is deployed, set `content.fixedContentBusId` to that value in the site config that will be switched, while its source URL still points to DA. Use the same ID for both the DA and HLX6 migration scopes so media is read from and written to the same bus.
+2. Check blockers and inspect the source and target state. Keep DA authoring active for this read-only preparation.
+
+	```bash
+	node bin/preflight.js -v <org>/<da-site>
+	node bin/dump.js -b da <org>/<da-site>
+	node bin/dump.js -b hlx6 <org>/<hlx6-site>
+	```
+
+3. Run a dry-run with the project-specific migration runner and review its report. Resolve blockers and target conflicts before execution. The current `bin/migrate.js` dry-run command is pinned to the sample project; see CLI usage below.
+
+4. Freeze DA edits, then execute with a fresh source snapshot. Keep the freeze in place through verification and cutover. The sample runner requires `--refresh-source -x`; a production runner must likewise migrate the final frozen snapshot.
+
+5. Dump the migrated HLX6 target and compare it with the DA snapshot. Confirm the expected content, versions, and media before changing the site's source URL.
+
+	```bash
+	node bin/dump.js -b hlx6 <org>/<hlx6-site>
+	node bin/compare.js analysis/da/<org>/<da-site> analysis/hlx6/<org>/<hlx6-site>
+	```
+
+6. Change `content.source.url` to the HLX6 source and leave `content.fixedContentBusId` set to the recorded DA ID. Verify preview/live content and media, then resume authoring on HLX6. For rollback, restore the DA source URL without removing the fixed ID.
+
+The current `bin/migrate.js` is pinned to the sample project; it is not yet a general-purpose production runner. A production migration needs its target, bus IDs, and IAM scope configured for that project. The runner copies a fresh snapshot; it does not provide live delta synchronization or delete source objects.
+
+## CLI usage
 Credentials and runtime settings are loaded from the local, git-ignored `.dev.vars` file; its non-empty values take precedence over shell variables. It holds the R2 read-only token, AWS profile/role settings, and target media API token. Keep its mode owner-only (`chmod 600 .dev.vars`).
 
 ```bash

@@ -15,7 +15,7 @@ Each question below states the problem, why it matters, and the options. **Rec.*
 
 | # | Topic | Blocks the migration? | Needs a decision from | Status |
 |---|---|---|---|---|
-| 1 | [Site cutover: keep the content bus id stable](#1-site-cutover-keep-the-content-bus-id-stable) | **yes** | helix team | `content.fixedContentBusId` support tracked in [helix-config-storage#326](https://github.com/adobe/helix-config-storage/pull/326) |
+| 1 | [Site cutover: keep the content bus id stable](#1-site-cutover-keep-the-content-bus-id-stable) | **yes** | helix team | decision made; deploy [`content.fixedContentBusId`](https://github.com/adobe/helix-config-storage/pull/326) before cutover |
 | 2 | [Original dates are lost](#2-original-dates-are-lost) | no (data kept, not displayed) | helix team, product | issue filed: [#458](https://github.com/adobe/helix-api-service/issues/458) |
 | 3 | [Edit history without a saved version](#3-edit-history-without-a-saved-version) | no | product | open |
 | 4 | [Images that cannot be uploaded](#4-images-that-cannot-be-uploaded) | per site | product | open |
@@ -46,7 +46,7 @@ This is `updateContentSource()` in `@adobe/helix-config-storage` (3.6.0), called
 
 The current config-storage code derives the id from the content source URL, so changing the URL would normally change the id even though the site name stays the same:
 
-PR [helix-config-storage#326](https://github.com/adobe/helix-config-storage/pull/326) adds `content.fixedContentBusId` as an explicit override. When set, config-storage keeps that ID instead of deriving a new one from the source URL; when unset, the existing URL-derived behavior remains. After this support is deployed, set the override to the site's current `contentBusId` as part of switching the content source to hlx6. This preserves the existing content and media bus paths.
+PR [helix-config-storage#326](https://github.com/adobe/helix-config-storage/pull/326) adds `content.fixedContentBusId` as an explicit override. When set, config-storage keeps that ID instead of deriving a new one from the source URL; when unset, the existing URL-derived behavior remains. After this support is deployed, set the override to the site's current `contentBusId` while the source still points to DA. At cutover, change the source URL and retain the override. This preserves the existing content and media bus paths.
 
 The migration does not edit site configuration or derive content bus IDs. Supply the same ID for the DA and hlx6 scopes when preserving the bus, so media lookup and upload continue to target the existing folder.
 
@@ -77,9 +77,9 @@ Re-saving the migrated documents is not enough; the preview and live state must 
 | B | Add an explicit da-to-hlx6 upgrade operation that carries the ID forward | Makes the transition atomic and auditable | Requires a migration/upgrade endpoint and operational workflow |
 | C | Maintain an old-source-ID to new-source-ID alias | Does not change the ID invariant | Adds indirection to every content/media lookup and cache path |
 
-No choice has been made about the implementation; the team decision is only that stability is required.
+The selected mechanism is `content.fixedContentBusId`; see the [main migration flow](../README.md#main-migration-flow) for the operator sequence. The override must be available before cutover.
 
-**Question for the helix team:** which mechanism will preserve the current ID, and how will it avoid purging or orphaning preview/live content during the source switch?
+**Cutover gate:** confirm the config-storage release with this override is deployed before changing the source URL. Keep the fixed ID through cutover and rollback, then verify preview, live content, and media before resuming authoring.
 
 ---
 
