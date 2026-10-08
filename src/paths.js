@@ -1,11 +1,5 @@
 export function sanitizeName(name) {
-  const normalized = name
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9_]+/g, '-')
-    .replace(/^-|-$/g, '');
-  return name.startsWith('.') && normalized ? `.${normalized}` : normalized;
+  return name;
 }
 
 /**
@@ -19,15 +13,10 @@ export function splitExt(name) {
 }
 
 /**
- * Maps a da document path (e.g. `/My Folder/Hello_World.html`) to the path hlx6 stores.
- * Leading dots and underscores are preserved; other characters are normalized and extensions lowercased.
+ * Reuses the source path exactly, without renaming folders or files.
  * @param {string} path absolute path starting with `/`
  * @returns {string}
  */
 export function toHlx6Path(path) {
-  const segments = path.split('/').slice(1);
-  const file = segments.pop();
-  const folders = segments.map(sanitizeName);
-  const { base, ext } = splitExt(file);
-  return `/${[...folders, `${sanitizeName(base)}${ext.toLowerCase()}`].join('/')}`;
+  return path;
 }

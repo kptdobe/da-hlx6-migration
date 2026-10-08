@@ -82,8 +82,8 @@ Implemented in `bin/preflight.js`.
 | Check | Severity |
 |---|---|
 | Unsupported extensions | blocking |
-| Path sanitization collisions | blocking |
-| Keys not in sanitized form (renamed on hlx6) | warning |
+| Actual duplicate target paths | blocking |
+| Filename renames | not performed; compatibility report field has count zero |
 | Version folders without a live or trashed doc (migrated as orphans, R7) | warning |
 | File property sidecars with no mapping | warning |
 

@@ -129,9 +129,23 @@ describe('buildMigrationPlan', () => {
     assert.deepEqual(plan.warnings, []);
   });
 
-  it('rejects source names that collide after hlx6 sanitization', () => {
-    const rows = [entry('/my page.html', '<main/>'), entry('/my-page.html', '<main/>')];
+  it('rejects duplicate source paths', () => {
+    const rows = [entry('/my page.html', '<main/>'), entry('/my page.html', '<main/>')];
     assert.throws(() => buildMigrationPlan(rows, scope), /preflight failed: path-collisions/);
+  });
+
+  it('uses literal source names for current content and folder markers', () => {
+    const paths = ['/My Folder/Café @2x%20(1).PNG', '/v1.2/release.notes.JSON',
+      '/my page.html', '/my-page.html', '/jordan%20den%c3%a9.html'];
+    const plan = buildMigrationPlan([
+      ...paths.map((path) => entry(path, 'content')),
+      entry('/My Folder.props', '{}'),
+    ], scope);
+    assert.deepEqual(plan.objects.map(({ key }) => key).sort(), [
+      ...paths.map((path) => `kptdobe/sample-content-hlx6-migrated${path}`),
+      'kptdobe/sample-content-hlx6-migrated/My Folder/.props',
+    ].sort());
+    assert.deepEqual(plan.warnings, []);
   });
 
   it('preserves underscores in target content and folder keys without false collisions', () => {

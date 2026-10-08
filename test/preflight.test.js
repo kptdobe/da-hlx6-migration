@@ -53,10 +53,10 @@ describe('preflight', () => {
     assert.deepEqual(check(result, 'unsupported-extensions').items, ['/notes.txt', '/feed.xml']);
   });
 
-  it('blocks paths that collide after sanitization', () => {
-    const result = preflight([da('/my page.html', { id: 'U1' }), da('/my-page.html', { id: 'U2' })]);
+  it('blocks duplicate target paths without renaming', () => {
+    const result = preflight([da('/my page.html', { id: 'U1' }), da('/my page.html', { id: 'U2' })]);
     assert.equal(result.ok, false);
-    assert.deepEqual(check(result, 'path-collisions').items, [{ hlx6Path: '/my-page.html', paths: ['/my page.html', '/my-page.html'] }]);
+    assert.deepEqual(check(result, 'path-collisions').items, [{ hlx6Path: '/my page.html', paths: ['/my page.html', '/my page.html'] }]);
   });
 
   it('keeps underscore names distinct from hyphen names without rename warnings', () => {
@@ -74,10 +74,15 @@ describe('preflight', () => {
     assert.equal(check(result, 'path-collisions').count, 0);
   });
 
-  it('warns about renamed paths without blocking', () => {
-    const result = preflight([da('/my page.html', { id: 'U1' })]);
+  it('keeps distinct source names without renames or normalization collisions', () => {
+    const result = preflight([
+      da('/my page.html'), da('/my-page.html'), da('/My Page.html'),
+      da('/jordan%20den%c3%a9.html'), da('/jordan-20den-c3-a9.html'),
+      da('/v1.2/Café @2x.PNG'),
+    ]);
     assert.equal(result.ok, true);
-    assert.deepEqual(check(result, 'renamed-paths').items, [{ from: '/my page.html', to: '/my-page.html' }]);
+    assert.equal(check(result, 'path-collisions').count, 0);
+    assert.deepEqual(check(result, 'renamed-paths').items, []);
   });
 
   it('warns about version folders of deleted documents', () => {

@@ -185,18 +185,9 @@ Saved versions migrate one to one. **Editing sessions that did not create a vers
 
 ## 7. File names that collide after renaming
 
-**Problem.** hlx6 normalises file and folder names: lowercase, accents removed, anything not `a-z0-9` becomes `-`. da only lowercases. So `my_page.html` and `my-page.html` are two files on da but the same hlx6 path. This is a storage-path collision, not a request to support move/rename operations.
+**Decision.** Preserve existing source folder and file names exactly. `my_page.html`, `my-page.html`, and `my page.html` remain distinct storage keys. Actual duplicate target paths remain blocking; folder marker, version, and trash layouts still follow backend requirements.
 
-Names that change also break links pointing to them.
-
-**Options**
-
-| | Approach |
-|---|---|
-| A | Block the site and report; resolve the source-side collision before migration, or explicitly choose which object to omit |
-| B | Preserve both by changing the migration mapping format (for example, encode the original name) | Requires hlx6 to support a reversible path mapping |
-
-**Rec.** A: stop before writing and require a human resolution. The migration does not invoke move/rename operations in hlx6; it maps each source key to its hlx6 storage path and cannot preserve two objects that normalize to the same key.
+Target read/authoring API compatibility for unusual names remains a separate validation concern. Existing target objects written with the old normalized mapping are not automatically renamed or deleted; destination conflict protection remains in force.
 
 ---
 

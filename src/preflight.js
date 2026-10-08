@@ -25,10 +25,6 @@ export function preflight(entries) {
     .filter(([, paths]) => paths.length > 1)
     .map(([hlx6Key, paths]) => ({ hlx6Path: hlx6Key.split(':')[1], paths }));
 
-  const renamed = current
-    .filter((e) => toHlx6Path(e.path) !== e.path)
-    .map((e) => ({ from: e.path, to: toHlx6Path(e.path) }));
-
   const liveIds = new Set(entries
     .filter((e) => CURRENT_KINDS.includes(e.kind) || e.kind === 'trash')
     .map((e) => e.metadata?.id).filter(Boolean));
@@ -47,7 +43,7 @@ export function preflight(entries) {
       id: 'path-collisions', severity: 'blocking', description: 'Several da paths map to the same hlx6 path', count: collisions.length, items: collisions,
     },
     {
-      id: 'renamed-paths', severity: 'warning', description: 'Paths renamed by hlx6 sanitization', count: renamed.length, items: renamed,
+      id: 'renamed-paths', severity: 'warning', description: 'Source paths are reused without renaming', count: 0, items: [],
     },
     {
       id: 'orphan-versions', severity: 'warning', description: 'Version folders whose document no longer exists', count: orphans.length, items: orphans,

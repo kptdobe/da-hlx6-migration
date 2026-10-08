@@ -126,14 +126,15 @@ or execution. Reports contain
 confidential site paths and image URLs. Valid AWS and read-only R2 credentials
 are required; DA authentication uses the local `da-auth` helper.
 
-Path mapping preserves underscores and a leading dot on folder names and file basenames, so
-`/.drafts/.page.html` and `/.config/.settings.json` keep their hidden names.
-Leading, trailing, and repeated underscores stay literal: `/_drafts_/page__one.html`
-remains `/_drafts_/page__one.html`. Other normalization still applies (case,
-accents, spaces, interior dots, and other punctuation). A hidden folder marker such as `.drafts.props` maps to
-`.drafts/.props`; `.page.html.props` remains a file sidecar. Preserving leading
-dots and underscores does not enable unsupported extensions. File property sidecars
-remain excluded under the same rules everywhere.
+Source folder and file names are reused exactly, including case, extension case,
+spaces, accents, percent escapes, dots, underscores, and punctuation. There is no
+normalization or URL decoding. `renamed-paths` remains in the report for
+compatibility with count zero. Required backend layouts still apply: folder
+markers such as `.drafts.props` become `.drafts/.props`, versions use `.versions/`,
+and trash keeps its namespace. Unsupported extensions and sidecar exclusions
+are unchanged. Unusual names still require separate target read/authoring API
+compatibility validation. Previously renamed target objects are not automatically
+renamed or deleted; unplanned-object protection remains in force.
 
 The `.da` folder has no special migration treatment. Supported files (including
 `config.json`, arbitrary JSON, and comment JSON) and folder markers follow the

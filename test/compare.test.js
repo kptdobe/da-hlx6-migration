@@ -95,16 +95,16 @@ describe('compareDumps', () => {
     hx('/index.html', {
       body: '<main>home</main>', metadata: { 'doc-id': 'D1', 'uncompressed-length': '17' }, contentEncoding: 'gzip',
     }),
-    hx('/my-page.html', { body: '<main>p</main>', metadata: { 'doc-id': 'D2' } }),
+    hx('/My Page.html', { body: '<main>p</main>', metadata: { 'doc-id': 'D2' } }),
     hx('/folder/.props', { body: '{}' }),
     hx('/only-hlx6.html', { body: '<main/>' }),
   ];
   const report = compareDumps(daSide, hlx6Side);
 
-  it('matches current content through the hlx6 path mapping', () => {
+  it('matches current content using unchanged source names', () => {
     assert.deepEqual(report.current.matched.map((m) => [m.daPath, m.hlx6Path, m.renamed]), [
       ['/index.html', '/index.html', false],
-      ['/My Page.html', '/my-page.html', true],
+      ['/My Page.html', '/My Page.html', false],
       ['/folder', '/folder', false],
     ]);
     assert.equal(report.current.matched[0].body.equal, true);
