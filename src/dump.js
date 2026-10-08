@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import processQueue from '@adobe/helix-shared-process-queue';
-import { listAll, getObject, headObject } from './storage.js';
+import { listSharded, getObject, headObject } from './storage.js';
 import { classifyDa, classifyHlx6 } from './classify.js';
 
 const CLASSIFIERS = { da: classifyDa, hlx6: classifyHlx6 };
@@ -20,15 +20,24 @@ const CLASSIFIERS = { da: classifyDa, hlx6: classifyHlx6 };
  */
 export async function scanSite({
   client, backend, bucket, org, site, withBodies = true, concurrency = 20,
+  onProgress = () => {}, listingConcurrency = 8,
 }) {
   const prefix = `${org}/${site}/`;
   const classify = CLASSIFIERS[backend];
-  const listed = await listAll(client, bucket, prefix);
+  const listed = await listSharded(client, bucket, prefix, { onProgress, concurrency: listingConcurrency });
+  const total = listed.length;
+  let completed = 0;
+  let bytes = 0;
+  const phase = `${withBodies ? 'Downloading' : 'Reading headers'} ${backend} ${org}/${site}`;
+  onProgress({ phase, completed, total, bytes });
   const entries = await processQueue(listed, async (obj) => {
     const rel = `/${obj.key.slice(prefix.length)}`;
     const res = withBodies
       ? await getObject(client, bucket, obj.key)
       : await headObject(client, bucket, obj.key);
+    completed += 1;
+    bytes += withBodies ? res.body.length : 0;
+    onProgress({ phase, completed, total, bytes, key: obj.key });
     return {
       key: obj.key,
       rel,
@@ -48,7 +57,9 @@ export async function scanSite({
 /**
  * Writes scan results to `outDir/manifest.json` and bodies under `outDir/files/`.
  */
-export async function writeDump(outDir, entries) {
+export async function writeDump(outDir, entries, { onProgress = () => {} } = {}) {
+  const phase = `Writing local dump ${outDir}`;
+  onProgress({ phase, completed: 0, total: entries.length });
   const filesDir = path.join(outDir, 'files');
   await fs.rm(outDir, { recursive: true, force: true });
   await fs.mkdir(filesDir, { recursive: true });
@@ -61,6 +72,7 @@ export async function writeDump(outDir, entries) {
       entry.bodyFile = path.join('files', entry.rel);
     }
     manifest.push(entry);
+    onProgress({ phase, completed: manifest.length, total: entries.length, key: entry.key });
   }
   await fs.writeFile(path.join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
   return manifest;
@@ -69,9 +81,18 @@ export async function writeDump(outDir, entries) {
 /**
  * Reads a dump back, loading bodies into `body` Buffers.
  */
-export async function readDump(outDir) {
+export async function readDump(outDir, { onProgress = () => {} } = {}) {
+  const phase = `Reading local dump ${outDir}`;
+  onProgress({ phase });
   const manifest = JSON.parse(await fs.readFile(path.join(outDir, 'manifest.json'), 'utf8'));
-  return Promise.all(manifest.map(async (entry) => (entry.bodyFile
-    ? { ...entry, body: await fs.readFile(path.join(outDir, entry.bodyFile)) }
-    : entry)));
+  let completed = 0;
+  onProgress({ phase, completed, total: manifest.length });
+  return Promise.all(manifest.map(async (entry) => {
+    const result = entry.bodyFile
+      ? { ...entry, body: await fs.readFile(path.join(outDir, entry.bodyFile)) }
+      : entry;
+    completed += 1;
+    onProgress({ phase, completed, total: manifest.length, key: entry.key });
+    return result;
+  }));
 }

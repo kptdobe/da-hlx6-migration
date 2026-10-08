@@ -3,6 +3,7 @@ import { parseArgs } from 'node:util';
 import { BACKENDS, createClient } from '../src/storage.js';
 import { scanSite, readDump } from '../src/dump.js';
 import { preflight } from '../src/preflight.js';
+import { createProgress } from '../src/progress.js';
 
 const USAGE = `Usage: node bin/preflight.js [options] <org/site>
        node bin/preflight.js --dump <da-dump-dir>
@@ -34,8 +35,12 @@ if (values.help || (!values.dump && (!org || !site))) {
   process.exit(values.help ? 0 : 1);
 }
 
+const progress = createProgress();
+progress.summary('PREFLIGHT; read-only', values.dump
+  ? { location: values.dump, backend: 'local dump' }
+  : { org, repo: site, backend: 'da', bucket: values.bucket || BACKENDS.da.bucket });
 const entries = values.dump
-  ? await readDump(values.dump)
+  ? await readDump(values.dump, { onProgress: progress.onProgress })
   : await scanSite({
     client: createClient('da', { devVarsPath: values['env-file'] }),
     backend: 'da',
@@ -43,9 +48,11 @@ const entries = values.dump
     org,
     site,
     withBodies: false,
+    onProgress: progress.onProgress,
   });
 
-const result = preflight(entries);
+const result = await progress.run(`Checking ${entries.length} source objects`, () => preflight(entries));
+progress.close();
 console.table(result.checks.map(({
   id, severity, count, description,
 }) => ({

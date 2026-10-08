@@ -39,9 +39,9 @@ The migration writes these metadata keys **now**, so no second pass is needed on
 | R7 | `.da-versions/{id}/` with no live or trash doc | same as R6 (orphan versions) | | §4 | hlx6 behaves the same after the trash is emptied |
 | R8 | `.da-versions/{id}/audit*.txt` | not written to the source bus | - | - | used as input for §4; raw files archived with the migration manifest. **Review**: acceptable to drop edit-only events from the UI? |
 | R9 | `<img src>`, `<source srcset>` in html | - | rewrite to **relative** `./media_{hash}.{ext}` after uploading the image to the hlx6 site's media bus with the **media API** (see §8) | - | covers previewed and never-previewed pages the same way |
-| R10 | `.da/config.json` | `{o}/{s}/.da/config.json` (preserve the leading dot) | as-is, gzip | common | migrated as JSON content |
-| R11 | `.da/comments/**` | not migrated | - | - | pre-flight **blocking** |
-| R12 | other extensions, `*.ext.props` sidecars, other `.da/**` | not migrated | - | - | pre-flight blocking / warning |
+| R10 | `.da/**` | ordinary path mapping under `{o}/{s}/.da/` | per R1-R4 | common | no folder-specific exception or exclusion |
+| R11 | `.da/comments/**` | ordinary path mapping per R10 | JSON per R2 | common | data copied; no comment-ID reattachment or comment UI support |
+| R12 | unsupported extensions, `*.ext.props` sidecars | not migrated | - | - | pre-flight blocking / warning, independent of folder name |
 
 ## 3. Common metadata (current and trashed objects)
 
@@ -81,12 +81,11 @@ Implemented in `bin/preflight.js`.
 
 | Check | Severity |
 |---|---|
-| `.da/comments/` objects present (comments are not migrated) | blocking |
 | Unsupported extensions | blocking |
 | Path sanitization collisions | blocking |
 | Keys not in sanitized form (renamed on hlx6) | warning |
 | Version folders without a live or trashed doc (migrated as orphans, R7) | warning |
-| Objects with no mapping (sidecars, other `.da/`) | warning |
+| File property sidecars with no mapping | warning |
 
 ## 6. Execution invariants
 - Pre-flight first. A blocking check stops the run unless explicitly acknowledged.

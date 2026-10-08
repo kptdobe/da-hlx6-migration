@@ -1,10 +1,74 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  parseDevVars, applyDevVars, listAll, getObject, headObject, createClient, putObject,
+  parseDevVars, applyDevVars, listAll, listSharded, getObject, headObject, createClient, putObject,
 } from '../src/storage.js';
 import { createScope } from '../src/scope.js';
 import { fakeClient } from './fixtures/fake-client.js';
+import { generateShardPrefixes } from '../src/sharding.js';
+
+describe('generateShardPrefixes', () => {
+  it('retains da-magic character shards and expands version paths into 256 hex shards', () => {
+    const shards = generateShardPrefixes('org/site/', 8, { expandPaths: ['.da-versions/'] });
+    const hex = shards.filter((shard) => shard.type === 'hex');
+    assert.equal(hex.length, 256);
+    assert.equal(hex[0].prefix, 'org/site/.da-versions/00');
+    assert.equal(hex.at(-1).prefix, 'org/site/.da-versions/ff');
+    assert.ok(shards.some((shard) => shard.prefix === 'org/site/a'));
+    assert.ok(shards.some((shard) => shard.prefix === 'org/site/@'));
+    assert.equal(new Set(shards.map((shard) => shard.prefix)).size, shards.length);
+    assert.deepEqual(generateShardPrefixes('org/site/', 1), [
+      { prefix: 'org/site/', type: 'all', description: 'All files', charRange: null },
+    ]);
+  });
+});
+
+describe('listSharded', () => {
+  it('rejects invalid concurrency before sending requests', async () => {
+    const client = fakeClient({});
+    for (const concurrency of [0, -1, 1.5, 33, NaN]) {
+      await assert.rejects(listSharded(client, 'aem-content', 'org/site/', { concurrency }), /concurrency/);
+    }
+    assert.deepEqual(client.calls, []);
+  });
+  it('lists every site key once across pages, punctuation, boundaries, and version shards', async () => {
+    const prefix = 'org/site/';
+    const suffixes = ['', '0', '0.html', 'A', 'a', 'a/page.html', '.da/comments/id/thread',
+      '.da-versions/00/id', '.da-versions/01/id', '.da-versions/ff/id',
+      '.da-versions/other/id', '!special', 'z', '~last', '\u00e9/page.html'];
+    const keys = suffixes.map((suffix) => prefix + suffix);
+    const client = fakeClient(Object.fromEntries([...keys, 'org/other/index.html']
+      .map((key) => [key, { body: 'content' }])), 2);
+    const events = [];
+    const objects = await listSharded(client, 'aem-content', prefix, {
+      concurrency: 3, onProgress: (event) => events.push(event),
+    });
+    assert.deepEqual(objects.map((object) => object.key),
+      keys.sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right))));
+    assert.equal(new Set(objects.map((object) => object.key)).size, keys.length);
+    assert.equal(events.at(-1).completed, keys.length);
+    assert.equal(events.at(-1).total, keys.length);
+    assert.ok(events.every((event) => event.shardsTotal === events[0].shardsTotal));
+    assert.equal(events.at(-1).shardsCompleted, events[0].shardsTotal);
+    assert.ok(client.calls.every((name) => name === 'ListObjectsV2Command'));
+  });
+
+  it('bounds simultaneous read requests and uses parallel shards', async () => {
+    let active = 0;
+    let maximum = 0;
+    const client = {
+      async send() {
+        active += 1;
+        maximum = Math.max(maximum, active);
+        await new Promise((resolve) => setImmediate(resolve));
+        active -= 1;
+        return { Contents: [], IsTruncated: false };
+      },
+    };
+    assert.deepEqual(await listSharded(client, 'aem-content', 'org/site/', { concurrency: 3 }), []);
+    assert.equal(maximum, 3);
+  });
+});
 
 describe('parseDevVars', () => {
   it('reads KEY=VALUE lines, skipping comments and blanks', () => {
@@ -46,6 +110,11 @@ describe('applyDevVars', () => {
 });
 
 describe('createClient', () => {
+  it('enables SDK adaptive throttling when explicitly requested', async () => {
+    const client = createClient('hlx6', { retryMode: 'adaptive' });
+    assert.equal(client.config.retryMode, 'adaptive');
+    client.destroy();
+  });
   it('fails clearly when R2 credentials are missing', () => {
     assert.throws(() => createClient('da', { devVarsPath: '/nonexistent/.dev.vars' }), /R2 credentials not found/);
   });

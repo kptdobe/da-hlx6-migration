@@ -91,6 +91,9 @@ function commonMetadata(entry, docId, body, originalPath) {
 }
 
 function makeCurrentPlan(entry, scope, auditIndex) {
+  if (entry.kind === 'trash' && entry.trashedKind === 'folder') {
+    return makeFolderPlan({ ...entry, path: entry.path.slice(0, -'.props'.length) }, scope, auditIndex);
+  }
   const body = entry.body || Buffer.alloc(0);
   const daId = entry.metadata?.id || entry.key;
   const docId = buildDocId(entry, auditIndex);
@@ -119,14 +122,16 @@ function makeCurrentPlan(entry, scope, auditIndex) {
 
 function makeFolderPlan(entry, scope, auditIndex) {
   const body = Buffer.from('{}');
-  const markerPath = toHlx6Path(entry.path);
+  const isTrash = entry.kind === 'trash';
+  const markerPath = `${isTrash ? '/.trash' : ''}${toHlx6Path(entry.path)}`;
   const key = `${scope.org}/${scope.hlx6Site}${markerPath}/.props`;
   const folderEntry = { ...entry, metadata: entry.metadata || {} };
   const docId = buildDocId(folderEntry, auditIndex);
-  const metadata = commonMetadata(folderEntry, docId, body);
+  const metadata = commonMetadata(folderEntry, docId, body,
+    isTrash ? sitePath(entry.metadata?.path) : undefined);
   metadata['da-id'] ||= folderEntry.metadata.id || entry.key;
   return {
-    kind: 'folder',
+    kind: isTrash ? 'trash' : 'folder',
     sourceKey: entry.key,
     key,
     body,
@@ -216,7 +221,7 @@ export function buildMigrationPlan(entries, scope) {
   return {
     scope: { org: scope.org, daSite: scope.daSite, hlx6Site: scope.hlx6Site },
     objects,
-    excluded: entries.filter((entry) => ['audit', 'comment', 'da-internal', 'props-sidecar'].includes(entry.kind))
+    excluded: entries.filter((entry) => ['audit', 'props-sidecar'].includes(entry.kind))
       .map((entry) => ({ key: entry.key, kind: entry.kind })),
     warnings: checks.checks.filter((check) => check.severity === 'warning' && check.count),
   };

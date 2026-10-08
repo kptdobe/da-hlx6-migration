@@ -28,9 +28,13 @@ describe('classifyDa', () => {
     assert.deepEqual(classifyDa('/.da-versions/abc/audit.txt'), { kind: 'audit', docId: 'abc' });
     assert.deepEqual(classifyDa('/.da-versions/abc/audit-1700000000000.txt'), { kind: 'audit', docId: 'abc' });
   });
-  it('classifies comments and other .da internals', () => {
-    assert.deepEqual(classifyDa('/.da/comments/doc1/c1.json'), { kind: 'comment', docId: 'doc1' });
-    assert.deepEqual(classifyDa('/.da/other.json'), { kind: 'da-internal', path: '/.da/other.json' });
+  it('classifies .da contents using ordinary extension and folder-marker rules', () => {
+    assert.deepEqual(classifyDa('/.da/comments/doc1/c1.json'), { kind: 'sheet', path: '/.da/comments/doc1/c1.json' });
+    assert.deepEqual(classifyDa('/.da/anotherfile.json'), { kind: 'sheet', path: '/.da/anotherfile.json' });
+    assert.deepEqual(classifyDa('/.da/page.html'), { kind: 'doc', path: '/.da/page.html' });
+    assert.deepEqual(classifyDa('/.da/image.png'), { kind: 'media', path: '/.da/image.png' });
+    assert.deepEqual(classifyDa('/.da/folder.props'), { kind: 'folder', path: '/.da/folder' });
+    assert.deepEqual(classifyDa('/.da/image.png.props'), { kind: 'props-sidecar', path: '/.da/image.png.props' });
   });
   it('classifies trashed items with their original kind', () => {
     assert.deepEqual(

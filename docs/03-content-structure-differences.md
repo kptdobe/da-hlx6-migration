@@ -72,7 +72,7 @@ The sample sets differ only by user actions: `frescopa-logo-1.svg` vs `frescopa-
 | 9 | Object identity | `id` UUID | `doc-id` ULID (also on folders and media) | new ULID per object; keep `id` → `doc-id` in the migration manifest | no |
 | 10 | Delete / trash | **da-live** moves the item client-side to `/.trash/{name}-{iso-date}.{ext}`; `id` is kept, so versions remain attached | **API** soft delete: `delete` version, then move to `/.trash/{name}`. Emptying the trash removes the trash object; versions stay as orphans | `.trash/x-<date>.html` → `.trash/x-<date>.html` (keep the name to avoid collisions) | no |
 | 10b | Trash metadata | `path` keeps the original path | `DELETE` sets `doc-path` (code and tests are correct). The sample object was **not** trashed: its `doc-id` was minted at write time (ULID 15:19:41.852Z), and it has no delete version, so it was a direct PUT/POST into `.trash/`. Reported as [adobe/helix-api-service#456](https://github.com/adobe/helix-api-service/issues/456) | migration sets `doc-path` itself (R5) | no |
-| 11 | Comments | `.da/comments/{id}/*.json` | not supported | deferred, detected by pre-flight | yes |
+| 11 | Comments | `.da/comments/{id}/*.json` | comment UI not supported | JSON files copied at their original paths using ordinary content rules; no document-ID reattachment | yes: files preserved, comment functionality not restored |
 | 12 | Config / ACL | KV `DA_CONFIG` | helix config | out of scope of the source bus | - |
 
 ### Open items from the run

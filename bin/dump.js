@@ -3,6 +3,7 @@ import { parseArgs } from 'node:util';
 import path from 'node:path';
 import { BACKENDS, createClient } from '../src/storage.js';
 import { scanSite, writeDump } from '../src/dump.js';
+import { createProgress } from '../src/progress.js';
 
 const USAGE = `Usage: node bin/dump.js -b <da|hlx6> [options] <org/site>
 
@@ -39,6 +40,10 @@ if (values.help || !org || !site || !BACKENDS[values.backend]) {
 const backend = values.backend;
 const bucket = values.bucket || BACKENDS[backend].bucket;
 const outDir = values.out || path.join('analysis', backend, org, site);
+const progress = createProgress();
+progress.summary(`DUMP; read-only remote access; concurrency=${values.concurrency}`, {
+  org, repo: site, backend, bucket,
+}, { location: outDir, backend: 'local files' });
 const client = createClient(backend, { devVarsPath: values['env-file'] });
 
 console.log(`Scanning ${backend} s3://${bucket}/${org}/${site}/ ...`);
@@ -46,8 +51,10 @@ const entries = await scanSite({
   client, backend, bucket, org, site,
   withBodies: !values['no-bodies'],
   concurrency: Number(values.concurrency),
+  onProgress: progress.onProgress,
 });
-await writeDump(outDir, entries);
+await progress.run('Saving dump', () => writeDump(outDir, entries, { onProgress: progress.onProgress }));
+progress.close();
 
 const kinds = {};
 entries.forEach((e) => { kinds[e.kind] = (kinds[e.kind] || 0) + 1; });

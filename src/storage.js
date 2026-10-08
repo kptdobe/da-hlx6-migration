@@ -6,7 +6,9 @@ import {
 } from '@aws-sdk/client-s3';
 import { NodeHttpHandler } from '@smithy/node-http-handler';
 import { fromTemporaryCredentials } from '@aws-sdk/credential-providers';
+import processQueue from '@adobe/helix-shared-process-queue';
 import { assertWritable, sessionTags, sessionName } from './scope.js';
+import { generateShardPrefixes } from './sharding.js';
 
 export const BACKENDS = {
   da: { bucket: 'aem-content' },
@@ -106,6 +108,7 @@ export function createClient(backend, opts = {}) {
       endpoint: env.S3_DEF_URL,
       forcePathStyle: true,
       region: 'auto',
+      retryMode: opts.retryMode || 'standard',
       maxAttempts: 5,
       requestHandler: httpHandler(),
     });
@@ -113,6 +116,7 @@ export function createClient(backend, opts = {}) {
   if (backend === 'hlx6') {
     return new S3Client({
       region: opts.region || BACKENDS.hlx6.region,
+      retryMode: opts.retryMode || 'standard',
       maxAttempts: 5,
       requestHandler: httpHandler(),
     });
@@ -124,8 +128,10 @@ export function createClient(backend, opts = {}) {
  * Lists all objects under a prefix, following continuation tokens.
  * @returns {Promise<{key:string,size:number,etag:string,lastModified:string}[]>}
  */
-export async function listAll(client, bucket, prefix) {
+export async function listAll(client, bucket, prefix, { onProgress = () => {} } = {}) {
   const objects = [];
+  let pages = 0;
+  onProgress({ phase: `Listing s3://${bucket}/${prefix}`, completed: 0 });
   let ContinuationToken;
   do {
     const resp = await client.send(new ListObjectsV2Command({
@@ -138,8 +144,70 @@ export async function listAll(client, bucket, prefix) {
       lastModified: new Date(o.LastModified).toISOString(),
     }));
     ContinuationToken = resp.IsTruncated ? resp.NextContinuationToken : undefined;
+    pages += 1;
+    onProgress({
+      phase: `Listing s3://${bucket}/${prefix} (page ${pages})`,
+      completed: objects.length,
+      ...(!ContinuationToken && { total: objects.length }),
+    });
   } while (ContinuationToken);
   return objects;
+}
+
+export async function listSharded(client, bucket, prefix, {
+  concurrency = 8, onProgress = () => {}, expandPaths = ['.da-versions/'],
+} = {}) {
+  if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 32) {
+    throw new Error('Listing concurrency must be an integer from 1 to 32');
+  }
+  const compare = (left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right));
+  const boundaries = [...new Set(generateShardPrefixes(prefix, concurrency, { expandPaths })
+    .map((shard) => shard.prefix))].sort(compare);
+  const ranges = [...boundaries, undefined].map((upper, index) => ({
+    lower: index ? boundaries[index - 1] : undefined, upper,
+  }));
+  const shardsTotal = ranges.length;
+  let completed = 0;
+  let shardsCompleted = 0;
+  let pages = 0;
+  const phase = `Listing shards s3://${bucket}/${prefix} (${concurrency} workers)`;
+  const progress = (finished = false) => onProgress({
+    phase, completed, shardsCompleted, shardsTotal, pages,
+    ...(finished && { total: completed }),
+  });
+  progress();
+  const results = await processQueue(ranges, async ({ lower, upper }) => {
+    const objects = [];
+    let ContinuationToken;
+    let finished;
+    do {
+      const response = await client.send(new ListObjectsV2Command({
+        Bucket: bucket, Prefix: prefix,
+        ...(lower && { StartAfter: lower }),
+        ...(ContinuationToken && { ContinuationToken }),
+      }));
+      const contents = response.Contents || [];
+      for (const object of contents) {
+        if (upper && compare(object.Key, upper) > 0) break;
+        objects.push({
+          key: object.Key, size: object.Size, etag: object.ETag,
+          lastModified: new Date(object.LastModified).toISOString(),
+        });
+        completed += 1;
+      }
+      pages += 1;
+      finished = !response.IsTruncated
+        || Boolean(upper && contents.length && compare(contents.at(-1).Key, upper) >= 0);
+      ContinuationToken = response.NextContinuationToken;
+      if (!finished && !ContinuationToken) throw new Error('Truncated shard listing has no continuation token');
+      progress();
+    } while (!finished);
+    shardsCompleted += 1;
+    progress();
+    return objects;
+  }, concurrency);
+  progress(true);
+  return results.flat().sort((left, right) => compare(left.key, right.key));
 }
 
 function headers(resp) {

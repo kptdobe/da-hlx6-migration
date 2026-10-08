@@ -8,7 +8,7 @@ import { Readable } from 'node:stream';
  * @param {number} [pageSize]
  */
 export function fakeClient(objects, pageSize = 1000) {
-  const keys = Object.keys(objects).sort();
+  const keys = Object.keys(objects).sort((left, right) => Buffer.compare(Buffer.from(left), Buffer.from(right)));
   const calls = [];
   const describe = (key) => {
     const o = objects[key];
@@ -34,7 +34,8 @@ export function fakeClient(objects, pageSize = 1000) {
       calls.push(name);
       const { input } = cmd;
       if (name === 'ListObjectsV2Command') {
-        const matching = keys.filter((k) => k.startsWith(input.Prefix));
+        const matching = keys.filter((k) => k.startsWith(input.Prefix)
+          && (!input.StartAfter || Buffer.compare(Buffer.from(k), Buffer.from(input.StartAfter)) > 0));
         const start = Number(input.ContinuationToken || 0);
         const page = matching.slice(start, start + pageSize);
         const next = start + pageSize;

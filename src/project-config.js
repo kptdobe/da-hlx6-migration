@@ -12,9 +12,11 @@ export async function migrateProjectConfig({
   daConfigToken,
   configToken,
   fetchImpl = fetch,
+  onProgress = () => {},
 }) {
-  const sourceUrl = `https://admin.da.live/config/${scope.org}/${scope.daSite}`;
+  const sourceUrl = `https://admin.da.live/config/${scope.daOrg || scope.org}/${scope.daSite}`;
   const targetUrl = `https://api.aem.live/${scope.org}/sites/${scope.hlx6Site}/config.json`;
+  onProgress({ phase: `Reading DA project config ${sourceUrl}` });
   const sourceResponse = await fetchImpl(sourceUrl, {
     headers: daConfigToken ? { authorization: `Bearer ${daConfigToken}` } : {},
   });
@@ -34,6 +36,7 @@ export async function migrateProjectConfig({
   }
   if (!configToken) throw new Error('An API token is required to migrate project config');
   const headers = { authorization: `Bearer ${configToken}` };
+  onProgress({ phase: `Reading target project config ${targetUrl}` });
   const targetResponse = await fetchImpl(targetUrl, { headers });
   if (!targetResponse.ok) {
     throw new Error(`Target config fetch failed (${targetResponse.status}): ${targetUrl}`);
@@ -53,6 +56,7 @@ export async function migrateProjectConfig({
     }
   }
   if (!execute) return { status: 'planned', sourceUrl, targetUrl };
+  onProgress({ phase: `Writing target editor.da config ${targetUrl}` });
   const response = await fetchImpl(targetUrl.replace('/config.json', '/config/editor/da.json'), {
     method: 'POST',
     headers: { ...headers, 'content-type': 'application/json' },

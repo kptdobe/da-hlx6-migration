@@ -161,10 +161,10 @@ Saved versions migrate one to one. **Editing sessions that did not create a vers
 
 | | Approach |
 |---|---|
-| A | Don't migrate comments; a site with comments is flagged by the pre-flight check and needs explicit approval |
+| A | Copy comment JSON using ordinary file migration, preserving its path and data but not restoring comment functionality |
 | B | Add comments to hlx6 (expose the document id, define where comments are stored), then migrate them, re-attached to the new document ids |
 
-**Status.** Deferred: A for now. The pre-flight check already blocks sites that have comments.
+**Status.** A for data preservation: `.da` has no special migration classification, exclusion, or comment blocker. Comment JSON migrates like other JSON files. B remains deferred; copying the files does not reattach them to new document IDs or enable the HLX6 comment UI.
 
 ---
 

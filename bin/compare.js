@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import { parseArgs } from 'node:util';
 import { readDump } from '../src/dump.js';
 import { compareDumps } from '../src/compare.js';
+import { createProgress } from '../src/progress.js';
 
 const USAGE = `Usage: node bin/compare.js [-o report.json] <da-dump-dir> <hlx6-dump-dir>
 
@@ -21,8 +22,14 @@ if (values.help || positionals.length !== 2) {
   process.exit(values.help ? 0 : 1);
 }
 
-const [da, hlx6] = await Promise.all(positionals.map(readDump));
-const report = compareDumps(da, hlx6);
+const progress = createProgress();
+progress.summary('COMPARE; local dumps; no remote access',
+  { location: positionals[0], backend: 'da dump' },
+  { location: positionals[1], backend: 'hlx6 dump' });
+const [da, hlx6] = await Promise.all(positionals.map((dir) => readDump(dir, {
+  onProgress: progress.onProgress,
+})));
+const report = await progress.run(`Comparing ${da.length} DA and ${hlx6.length} HLX6 objects`, () => compareDumps(da, hlx6));
 
 console.log('\n## Object counts by kind');
 console.table(Object.fromEntries([...new Set([...Object.keys(report.counts.da), ...Object.keys(report.counts.hlx6)])]
@@ -75,6 +82,9 @@ console.log('\n## Trash');
 });
 
 if (values.out) {
+  progress.log(`Writing report: ${values.out}`);
   await fs.writeFile(values.out, JSON.stringify(report, null, 2));
   console.log(`\nFull report written to ${values.out}`);
 }
+progress.log('Comparison complete');
+progress.close();

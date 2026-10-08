@@ -21,10 +21,6 @@ export function classifyDa(rel) {
   if (m) return { kind: 'audit', docId: m[1] };
   m = rel.match(/^\/\.da-versions\/([^/]+)\/([^/]+)$/);
   if (m) return { kind: 'version', docId: m[1], versionId: splitExt(m[2]).base };
-  m = rel.match(/^\/\.da\/comments\/([^/]+)\//);
-  if (m) return { kind: 'comment', docId: m[1] };
-  if (rel === '/.da/config.json') return { kind: 'sheet', path: rel };
-  if (rel.startsWith('/.da/')) return { kind: 'da-internal', path: rel };
   if (rel.startsWith('/.trash/')) {
     // da-live moves deleted items to /.trash/{name}-{iso-date}.{ext} (client-side, da-list.js)
     const inner = rel.slice('/.trash'.length);
@@ -32,10 +28,9 @@ export function classifyDa(rel) {
   }
 
   const name = rel.split('/').pop();
-  const parts = name.split('.');
-  if (parts.at(-1) === 'props') {
+  if (name.endsWith('.props')) {
     // `folder.props` marks a folder; `file.jpg.props` is a sidecar
-    return parts.length === 2
+    return splitExt(name.slice(0, -'.props'.length)).ext === ''
       ? { kind: 'folder', path: rel.slice(0, -'.props'.length) }
       : { kind: 'props-sidecar', path: rel };
   }

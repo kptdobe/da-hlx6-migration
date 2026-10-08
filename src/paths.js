@@ -1,11 +1,11 @@
-// Mirrors @adobe/helix-shared-string sanitizeName, used by helix-api-service for source keys.
 export function sanitizeName(name) {
-  return name
+  const normalized = name
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/[^a-z0-9_]+/g, '-')
     .replace(/^-|-$/g, '');
+  return name.startsWith('.') && normalized ? `.${normalized}` : normalized;
 }
 
 /**
@@ -20,13 +20,11 @@ export function splitExt(name) {
 
 /**
  * Maps a da document path (e.g. `/My Folder/Hello_World.html`) to the path hlx6 stores.
- * Every folder segment and the basename are sanitized; the extension is lowercased.
+ * Leading dots and underscores are preserved; other characters are normalized and extensions lowercased.
  * @param {string} path absolute path starting with `/`
  * @returns {string}
  */
 export function toHlx6Path(path) {
-  // Preserve this DA-owned config file at its literal hidden path.
-  if (path === '/.da/config.json') return path;
   const segments = path.split('/').slice(1);
   const file = segments.pop();
   const folders = segments.map(sanitizeName);

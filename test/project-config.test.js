@@ -3,6 +3,26 @@ import assert from 'node:assert/strict';
 import { migrateProjectConfig } from '../src/project-config.js';
 
 const scope = { org: 'kptdobe', daSite: 'sample-content-da', hlx6Site: 'sample-content-hlx6' };
+it('reads cross-org source config without writing either site during a dry-run', async () => {
+  const calls = [];
+  const events = [];
+  const result = await migrateProjectConfig({
+    scope: { org: 'kptdobe', daOrg: 'adobecom', daSite: 'da-events', hlx6Site: 'da-events-migrated' },
+    configToken: 'test-token',
+    onProgress: (event) => events.push(event),
+    fetchImpl: async (url, options) => {
+      calls.push({ url, method: options.method || 'GET' });
+      return { ok: true, json: async () => ({}) };
+    },
+  });
+  assert.equal(result.status, 'planned');
+  assert.match(events[0].phase, /Reading DA project config.*adobecom\/da-events/);
+  assert.match(events[1].phase, /Reading target project config.*kptdobe\/sites\/da-events-migrated/);
+  assert.deepEqual(calls, [
+    { url: 'https://admin.da.live/config/adobecom/da-events', method: 'GET' },
+    { url: 'https://api.aem.live/kptdobe/sites/da-events-migrated/config.json', method: 'GET' },
+  ]);
+});
 const daUrl = 'https://admin.da.live/config/kptdobe/sample-content-da';
 const targetUrl = 'https://api.aem.live/kptdobe/sites/sample-content-hlx6/config.json';
 const sheetConfig = {

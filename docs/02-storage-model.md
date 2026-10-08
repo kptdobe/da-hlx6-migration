@@ -16,7 +16,7 @@ Everything in this document must be confirmed on real data in Phase 3 (see [03](
 | Case | **Whole path lowercased** (`daCtx.js`: `pathname.toLowerCase()`) | Basename **sanitized** by `sanitizePath()` (helix-shared-string `sanitizeName`: lowercase, non `[a-z0-9]` → `-`). PUT rejects non-sanitized paths with 400 |
 | Allowed extensions | Any | Only `.gif .html .ico .jpeg .jpg .json .mp4 .pdf .png .svg` (`source/utils.js` `CONTENT_TYPES`), otherwise **415** |
 | Folder marker | Sibling object `{org}/{site}/{folder}.props` | Child object `{org}/{site}/{folder}/.props` (body `{}`, `application/json`) |
-| Hidden / reserved | `.da-versions/`, `*.props`, `.da/` (e.g. `.da/comments/{docId}`; `/.da/config.json` is the migration exception) | `.versions/`, `.trash/`, `.props`, migrated `/.da/config.json` |
+| Hidden / reserved | `.da-versions/`, `*.props`, `.da/` (e.g. `.da/comments/{docId}`) | `.versions/`, `.trash/`, `.props`; `.da/` contents migrate as ordinary files and folders, without exceptions |
 
 ## 2. Document object
 
@@ -81,7 +81,7 @@ Everything in this document must be confirmed on real data in Phase 3 (see [03](
    - The UI shows `version-date` first, so a client or API change is needed to display original dates. **Decision needed.**
 2. **Audit-only entries** (da edits without a version snapshot) have no hlx6 equivalent. **Decision needed:** drop them, store them as an archived sidecar, or convert them.
 3. **IDs**: da UUID `id`/`version` vs hlx6 ULID `doc-id`/version. A ULID can encode the original timestamp (`ulid(seedTime)`), which preserves ordering.
-4. **Paths**: da lowercases the whole path; hlx6 sanitizes basenames. Names with `_`, `.`, spaces or unicode may map to a different key, which creates possible **collisions**.
+4. **Paths**: da lowercases the whole path; hlx6 sanitizes basenames. The migration mapper preserves underscores and leading dots on folders and file basenames. Names with interior `.`, spaces or unicode may still map to a different key, which creates possible **collisions**. Underscore names remain distinct from hyphen names. Hidden folder markers such as `.drafts.props` map to `.drafts/.props`.
 5. **Unsupported extensions** in da (anything outside the 10 types) cannot be stored in hlx6.
 6. **Image references** to `content.da.live` are invalid in hlx6 HTML. The images must be interned into the media bus and the URLs rewritten.
 7. **Orphaned da versions** (of hard-deleted docs) have no live doc on hlx6. They could go into `.trash` with versions.

@@ -15,6 +15,25 @@ const daObjects = {
 };
 
 describe('scanSite', () => {
+  it('reports listing and download counts and bytes, including empty sites', async () => {
+    const events = [];
+    const entries = await scanSite({
+      client: fakeClient(daObjects, 2), backend: 'da', bucket: 'aem-content',
+      org: 'kptdobe', site: 'sample-da', onProgress: (event) => events.push(event),
+    });
+    assert.ok(events.some((event) => event.phase.startsWith('Listing shards') && event.total === 4));
+    const downloads = events.filter((event) => event.phase.startsWith('Downloading'));
+    assert.deepEqual(downloads.map((event) => event.completed), [0, 1, 2, 3, 4]);
+    assert.equal(downloads.at(-1).total, 4);
+    assert.equal(downloads.at(-1).bytes, entries.reduce((sum, entry) => sum + entry.body.length, 0));
+    const empty = [];
+    await scanSite({
+      client: fakeClient({}), backend: 'da', bucket: 'aem-content',
+      org: 'kptdobe', site: 'empty', onProgress: (event) => empty.push(event),
+    });
+    assert.equal(empty.at(-1).completed, 0);
+    assert.equal(empty.at(-1).total, 0);
+  });
   it('lists only the requested site and classifies each object', async () => {
     const entries = await scanSite({
       client: fakeClient(daObjects), backend: 'da', bucket: 'aem-content', org: 'kptdobe', site: 'sample-da',
@@ -60,11 +79,15 @@ describe('writeDump / readDump', () => {
       const entries = await scanSite({
         client: fakeClient(daObjects), backend: 'da', bucket: 'aem-content', org: 'kptdobe', site: 'sample-da',
       });
-      await writeDump(dir, entries);
+      const writes = [];
+      await writeDump(dir, entries, { onProgress: (event) => writes.push(event) });
+      assert.equal(writes.at(-1).completed, entries.length);
       const onDisk = await fs.readFile(path.join(dir, 'files', 'index.html'), 'utf8');
       assert.equal(onDisk, '<body><main>home</main></body>');
 
-      const back = await readDump(dir);
+      const reads = [];
+      const back = await readDump(dir, { onProgress: (event) => reads.push(event) });
+      assert.equal(reads.at(-1).completed, entries.length);
       assert.equal(back.length, 4);
       const version = back.find((e) => e.kind === 'version');
       assert.equal(version.body.toString(), '<body><main>old</main></body>');

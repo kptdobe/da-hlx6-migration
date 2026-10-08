@@ -11,9 +11,6 @@ const CURRENT_KINDS = ['doc', 'sheet', 'media', 'folder'];
 export function preflight(entries) {
   const current = entries.filter((e) => CURRENT_KINDS.includes(e.kind));
 
-  const comments = entries.filter((e) => e.kind === 'comment');
-  const commentDocs = [...new Set(comments.map((e) => e.docId))];
-
   const unsupported = current
     .filter((e) => e.kind !== 'folder' && !isSupportedOnHlx6(e.path))
     .map((e) => e.path);
@@ -39,13 +36,10 @@ export function preflight(entries) {
   const orphans = [...versionIds].filter((id) => !liveIds.has(id));
 
   const others = entries
-    .filter((e) => ['props-sidecar', 'da-internal'].includes(e.kind))
+    .filter((e) => e.kind === 'props-sidecar')
     .map((e) => e.path);
 
   const checks = [
-    {
-      id: 'comments', severity: 'blocking', description: 'Comments exist (.da/comments) and are not migrated', count: comments.length, items: commentDocs,
-    },
     {
       id: 'unsupported-extensions', severity: 'blocking', description: 'Files with extensions hlx6 does not accept', count: unsupported.length, items: unsupported,
     },
@@ -59,7 +53,7 @@ export function preflight(entries) {
       id: 'orphan-versions', severity: 'warning', description: 'Version folders whose document no longer exists', count: orphans.length, items: orphans,
     },
     {
-      id: 'unmapped-objects', severity: 'warning', description: 'Objects with no hlx6 mapping (props sidecars, other .da/ files)', count: others.length, items: others,
+      id: 'unmapped-objects', severity: 'warning', description: 'File property sidecars with no hlx6 mapping', count: others.length, items: others,
     },
   ];
   return {

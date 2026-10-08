@@ -26,9 +26,11 @@ function belongsToMigration(head, object) {
     && head.metadata?.['da-source-sha256'] === sha256(object.body);
 }
 
-export async function inspectDestination(client, scope, objects, { overwrite = false } = {}) {
+export async function inspectDestination(client, scope, objects, {
+  overwrite = false, onProgress = () => {},
+} = {}) {
   const prefix = `${scope.org}/${scope.hlx6Site}/`;
-  const existing = await listAll(client, SOURCE_BUCKET, prefix);
+  const existing = await listAll(client, SOURCE_BUCKET, prefix, { onProgress });
   const planKeys = new Set(objects.map((object) => object.key));
   const unexpected = existing.filter((object) => !planKeys.has(object.key));
   if (unexpected.length) {
@@ -37,13 +39,20 @@ export async function inspectDestination(client, scope, objects, { overwrite = f
 
   const existingKeys = new Set(existing.map((object) => object.key));
   const statuses = new Map();
+  const progress = (object) => onProgress({
+    phase: 'Checking destination conflicts', completed: statuses.size, total: objects.length,
+    key: object.key, status: statuses.get(object.key),
+  });
+  onProgress({ phase: 'Checking destination conflicts', completed: 0, total: objects.length });
   for (const object of objects) {
     if (!existingKeys.has(object.key)) {
       statuses.set(object.key, 'planned');
+      progress(object);
       continue;
     }
     if (overwrite) {
       statuses.set(object.key, 'overwrite');
+      progress(object);
       continue;
     }
     const head = await headObject(client, SOURCE_BUCKET, object.key);
@@ -51,11 +60,12 @@ export async function inspectDestination(client, scope, objects, { overwrite = f
       throw new Error(`Destination key exists but is not an identical migration object: ${object.key}`);
     }
     statuses.set(object.key, 'exists');
+    progress(object);
   }
   return statuses;
 }
 
-async function prepareImages(objects, { scope, mediaToken, daSourceToken, fetchImpl }) {
+async function prepareImages(objects, { scope, mediaToken, daSourceToken, fetchImpl, onProgress }) {
   const urls = [...new Set(objects
     .filter((object) => object.contentType === 'text/html')
     .flatMap((object) => collectExternalImageUrls(object.body.toString('utf8'), scope.org, scope.hlx6Site)))];
@@ -63,6 +73,8 @@ async function prepareImages(objects, { scope, mediaToken, daSourceToken, fetchI
     throw new Error(`External images require an API token (${urls.length} distinct URL(s))`);
   }
   const replacements = new Map();
+  const total = urls.length;
+  onProgress({ phase: 'Uploading external images', completed: 0, total });
   const apiUrl = `https://api.aem.live/${scope.org}/sites/${scope.hlx6Site}/media/`;
   await processQueue(urls, async (url) => {
     const uploaded = await uploadImage(url, {
@@ -72,6 +84,7 @@ async function prepareImages(objects, { scope, mediaToken, daSourceToken, fetchI
       fetchImpl,
     });
     replacements.set(url, uploaded.relativeUrl);
+    onProgress({ phase: 'Uploading external images', completed: replacements.size, total });
   }, IMAGE_CONCURRENCY);
   return replacements;
 }
@@ -108,8 +121,9 @@ export async function runMigration(plan, {
   fetchImpl,
   onProgress = () => {},
 }) {
-  const statuses = await inspectDestination(client, scope, plan.objects, { overwrite });
+  const statuses = await inspectDestination(client, scope, plan.objects, { overwrite, onProgress });
   if (!execute) {
+    onProgress({ phase: 'Collecting external image URLs (dry run; no uploads)' });
     return {
       dryRun: true,
       statuses,
@@ -121,11 +135,19 @@ export async function runMigration(plan, {
   }
 
   const replacements = await prepareImages(plan.objects, {
-    scope, mediaToken, daSourceToken, fetchImpl,
+    scope, mediaToken, daSourceToken, fetchImpl, onProgress,
   });
+  onProgress({ phase: 'Preparing target objects' });
   const objects = plan.objects.map((object) => prepareObject(object, replacements, scope));
   const ranks = [...new Set(objects.map((object) => writeRank(object.kind)))].sort((a, b) => a - b);
   const results = [];
+  let completed = 0;
+  const total = objects.filter((object) => statuses.get(object.key) !== 'exists').length;
+  const written = (object, status) => {
+    completed += 1;
+    onProgress({ phase: 'Writing target objects', completed, total, key: object.key, status, kind: object.kind });
+  };
+  onProgress({ phase: 'Writing target objects', completed, total });
   for (const rank of ranks) {
     const stage = objects.filter((object) => writeRank(object.kind) === rank
       && statuses.get(object.key) !== 'exists');
@@ -141,13 +163,13 @@ export async function runMigration(plan, {
       };
       try {
         await putObject(client, scope, input);
-        onProgress({ key: object.key, status: 'written', kind: object.kind });
+        written(object, 'written');
         return { key: object.key, status: 'written', kind: object.kind };
       } catch (error) {
         if (error.$metadata?.httpStatusCode === 412) {
           const head = await headObject(client, SOURCE_BUCKET, object.key);
           if (belongsToMigration(head, object)) {
-            onProgress({ key: object.key, status: 'exists', kind: object.kind });
+            written(object, 'exists');
             return { key: object.key, status: 'exists', kind: object.kind };
           }
         }

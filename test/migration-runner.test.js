@@ -118,7 +118,13 @@ describe('runMigration', () => {
 
   it('dry-runs without any PutObject calls', async () => {
     const client = fakeClient();
-    const result = await runMigration({ objects: [object] }, { client, scope });
+    const events = [];
+    const result = await runMigration({ objects: [object] }, {
+      client, scope, onProgress: (event) => events.push(event),
+    });
+    assert.ok(events.some((event) => event.phase === 'Checking destination conflicts'
+      && event.completed === 1 && event.total === 1));
+    assert.match(events.at(-1).phase, /dry run; no uploads/);
     assert.equal(result.dryRun, true);
     assert.equal(client.writes.length, 0);
     assert.equal(result.objects, 1);
@@ -126,6 +132,7 @@ describe('runMigration', () => {
 
   it('writes only planned target keys and gzip-encodes text bodies', async () => {
     const client = fakeClient();
+    const events = [];
     const result = await runMigration({ objects: [object] }, {
       client,
       scope: {
@@ -133,7 +140,12 @@ describe('runMigration', () => {
         write: [{ bucket: 'helix-source-bus', prefix: 'kptdobe/sample-content-hlx6-migrated/' }],
       },
       execute: true,
+      onProgress: (event) => events.push(event),
     });
+    assert.ok(events.some((event) => event.phase === 'Uploading external images' && event.total === 0));
+    assert.equal(events.at(-1).completed, 1);
+    assert.equal(events.at(-1).total, 1);
+    assert.equal(events.at(-1).status, 'written');
     assert.equal(result.results.length, 1);
     assert.equal(client.writes.length, 1);
     assert.equal(client.writes[0].Key, object.key);
