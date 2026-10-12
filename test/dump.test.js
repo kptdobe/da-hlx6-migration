@@ -15,6 +15,49 @@ const daObjects = {
 };
 
 describe('scanSite', () => {
+  it('retains source bodies in a private snapshot, including objects that are also folder prefixes', async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'scan-snapshot-'));
+    const outDir = path.join(directory, 'snapshot');
+    const objects = {
+      'org/site/index.html': { body: '<main>home</main>' },
+      'org/site/folder': { body: '{}' },
+      'org/site/folder/nested.html': { body: '<main>nested</main>' },
+      'org/site/.da-versions/id/audit.txt': { body: 'audit data' },
+    };
+    try {
+      const entries = await scanSite({ client: fakeClient(objects), backend: 'da', bucket: 'aem-content', org: 'org', site: 'site', outDir });
+      const saved = await readDump(outDir);
+      assert.equal(saved.length, 4);
+      for (const entry of saved) assert.equal(entry.body.toString(), objects[entry.key].body);
+      assert.equal(await fs.readFile(path.join(outDir, 'files/index.html'), 'utf8'), '<main>home</main>');
+      assert.ok(saved.find(({ rel }) => rel === '/folder').bodyFile.startsWith('objects/'));
+      assert.equal((await fs.stat(outDir)).mode & 0o777, 0o700);
+      assert.equal((await fs.stat(path.join(outDir, 'files/index.html'))).mode & 0o777, 0o600);
+      assert.equal(JSON.parse(await fs.readFile(path.join(outDir, 'snapshot.json'), 'utf8')).complete, true);
+      assert.ok(entries.every(({ body }) => Buffer.isBuffer(body)));
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps downloaded files and marks the snapshot incomplete if a later source read fails', async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'scan-partial-'));
+    const outDir = path.join(directory, 'snapshot');
+    const source = fakeClient({ 'org/site/a.html': { body: 'saved' }, 'org/site/b.html': { body: 'later' } });
+    const client = { async send(command) {
+      if (command.constructor.name === 'GetObjectCommand' && command.input.Key.endsWith('/b.html')) throw new Error('Source unavailable');
+      return source.send(command);
+    } };
+    try {
+      await assert.rejects(scanSite({ client, backend: 'da', bucket: 'aem-content', org: 'org', site: 'site', concurrency: 1, outDir }), /Source unavailable/);
+      assert.equal(await fs.readFile(path.join(outDir, 'files/a.html'), 'utf8'), 'saved');
+      assert.equal(JSON.parse(await fs.readFile(path.join(outDir, 'snapshot.json'), 'utf8')).complete, false);
+      await assert.rejects(readDump(outDir), /Snapshot is incomplete/);
+      await assert.rejects(readDump(outDir, { withBodies: false }), /Snapshot is incomplete/);
+    } finally {
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
   it('reports listing and download counts and bytes, including empty sites', async () => {
     const events = [];
     const entries = await scanSite({

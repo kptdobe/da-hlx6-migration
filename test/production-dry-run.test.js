@@ -40,6 +40,7 @@ it('executes cross-org migrations with resolved bus IDs and target-only writes',
   const writes = [];
   const apiCalls = [];
   let scopedClientCreated = false;
+  let downloadedSource;
   const messages = [];
   const progress = { summary() {}, log(message) { messages.push(message); }, onProgress() {}, close() {}, async run(label, operation) { return operation(); } };
   try {
@@ -82,6 +83,7 @@ it('executes cross-org migrations with resolved bus IDs and target-only writes',
           ? { data: [{ key: 'test', value: 'value' }] } : {}) };
       },
     });
+    downloadedSource = report.sourceDump;
     assert.equal(scopedClientCreated, true);
     assert.deepEqual(report.blockers, []);
     assert.equal(report.dryRun, false);
@@ -105,6 +107,7 @@ it('executes cross-org migrations with resolved bus IDs and target-only writes',
     assert.equal(report.warnings.find(({ id }) => id === 'image-upload-errors').count, 1);
     assert.deepEqual(JSON.parse(await fs.readFile(path.join(directory, 'report.json'), 'utf8')).imageErrors, report.imageErrors);
   } finally {
+    if (downloadedSource) await fs.rm(downloadedSource, { recursive: true, force: true });
     for (const key of envKeys) {
       if (previous[key] === undefined) delete process.env[key];
       else process.env[key] = previous[key];
@@ -310,6 +313,7 @@ it('full validation dry-runs cross-org sites with correct target keys, config UR
     'orgs/source-org/sites/source-site.json': { body: JSON.stringify({ content: { contentBusId: 'a'.repeat(59) } }) },
   });
   const requests = [];
+  let downloadedSource;
   const progress = { summary() {}, log() {}, onProgress() {}, close() {}, async run(label, operation) { return operation(); } };
   try {
     const report = await migrateCli([source, target, '--full-validation', '-e', envFile, '-o', out], {
@@ -324,6 +328,10 @@ it('full validation dry-runs cross-org sites with correct target keys, config UR
     });
     assert.equal(report.dryRun, true);
     assert.equal(report.validation, 'full');
+    downloadedSource = report.sourceDump;
+    assert.equal(report.sourceSnapshotComplete, true);
+    assert.equal(await fs.readFile(path.join(downloadedSource, 'files/index.html'), 'utf8'), '<body><main>Event</main></body>');
+    assert.equal((await fs.stat(downloadedSource)).mode & 0o777, 0o700);
     assert.equal(report.source, source);
     assert.equal(report.target, target);
     assert.equal(report.objects, 1);
@@ -340,6 +348,7 @@ it('full validation dry-runs cross-org sites with correct target keys, config UR
     assert.equal((await fs.stat(out)).mode & 0o777, 0o600);
     await assert.rejects(migrateCli([source, target, '-e', envFile, '-o', out], { progress }), /EEXIST/);
   } finally {
+    if (downloadedSource) await fs.rm(downloadedSource, { recursive: true, force: true });
     await fs.rm(directory, { recursive: true, force: true });
   }
 });

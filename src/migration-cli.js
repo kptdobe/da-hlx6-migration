@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { BACKENDS, applyDevVars, createClient, createMigrationClient, getObject, listSharded } from './storage.js';
@@ -188,10 +189,15 @@ export async function migrateCli(args, {
         devVarsPath: values['env-file'], retryMode: 'adaptive',
       }));
       if (fullValidation) {
+        const downloadDir = await fs.mkdtemp(path.join(os.tmpdir(), `da-migration-${daOrg}-${daSite}-`));
+        report.sourceDump = downloadDir;
+        report.sourceSnapshotComplete = false;
+        progress.log(`Downloaded source files: ${downloadDir} (retained locally)`);
         entries = await scanSite({
           client: daClient, backend: 'da', bucket: BACKENDS.da.bucket, org: daOrg, site: daSite,
-          concurrency, listingConcurrency, onProgress: progress.onProgress,
+          concurrency, listingConcurrency, onProgress: progress.onProgress, outDir: downloadDir,
         });
+        report.sourceSnapshotComplete = true;
         if (sourceDump) await progress.run('Saving source snapshot', () => writeDump(sourceDump, entries, { onProgress: progress.onProgress }));
       } else {
         entries = await listSharded(daClient, BACKENDS.da.bucket, `${source}/`, {
@@ -199,10 +205,8 @@ export async function migrateCli(args, {
         });
       }
     } else {
-      entries = fullValidation ? await readDump(sourceDump, { onProgress: progress.onProgress })
-        : await progress.run('Reading local source inventory (manifest only)', async () => JSON.parse(
-          await fs.readFile(path.join(sourceDump, 'manifest.json'), 'utf8'),
-        ));
+      report.sourceDump = path.resolve(sourceDump);
+      entries = await readDump(sourceDump, { onProgress: progress.onProgress, withBodies: fullValidation });
     }
     if (!entries.length || entries.some((entry) => !entry.key.startsWith(`${source}/`))) {
       throw new Error('Source is empty or contains keys outside the requested DA site');

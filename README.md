@@ -101,8 +101,28 @@ To download source objects and perform the previous full dry-run validation, opt
 node bin/migrate.js --dry-run --full-validation source-org/source-site target-org/target-site
 ```
 
-Full validation downloads source content into process memory and runs body-dependent
-planning and conflict checks; it still performs no uploads or remote writes.
+Full validation downloads source content and retains a private local temp snapshot
+while running body-dependent planning and conflict checks; it still performs no
+uploads or remote writes. Execution retains the same kind of snapshot. The CLI
+prints the directory before downloading and records it as `sourceDump` in the
+report. Files are saved as each download completes, under `files/` with their
+original paths; `manifest.json` maps keys to local files. Folder-like objects that
+also have children, unsafe local paths, and filesystem naming collisions use
+`objects/` fallback files identified by the manifest. Bodies are decompressed
+when the source uses gzip, matching the planner's input.
+
+Snapshots include current content, versions, audit logs, and trash. They are
+retained after success or failure; `snapshot.json` and `sourceSnapshotComplete`
+indicate whether every object was downloaded. Incomplete snapshots cannot be
+reused for planning. Directories are owner-only (0700), files are 0600. These
+snapshots contain confidential production content: move them somewhere durable
+if needed and remove them when no longer needed; the OS may eventually clean
+its temp directory. Image bytes fetched separately for media uploads are not
+part of this source snapshot.
+
+The planner still consumes buffers in memory. Persistence adds inspection and
+reuse, not a streaming or reduced-memory implementation; the previous memory-only
+behavior was an implementation choice, not a measured performance optimization.
 The target must already have the expected HLX6 source URL and a valid content bus
 ID. Source and target summaries print resolved bus IDs before scanning; an
 inaccessible source config is explicitly reported as unknown. Use a local source
@@ -120,9 +140,10 @@ Inventory does not plan overwrites or check target ownership. Reports are
 timestamped, owner-only files under `analysis/` and existing reports are never
 overwritten; `-o` selects a new output file. Reports include blockers and return
 a nonzero exit status on failure. Source bodies are only read during full validation
-or execution. Those bodies are held in memory rather than saved to disk, unless
-refreshing an explicitly selected source dump; that refresh requires full validation
-or execution. Reports contain
+or execution. They are retained in a private temp snapshot and also used as
+in-memory buffers by the planner. Refreshing an explicitly selected source dump
+still requires full validation or execution and saves an additional local copy.
+Reports contain
 confidential site paths and image URLs. Valid AWS and read-only R2 credentials
 are required; DA authentication uses the local `da-auth` helper.
 
