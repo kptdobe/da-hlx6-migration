@@ -1,6 +1,5 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import os from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
 import { BACKENDS, applyDevVars, createClient, createMigrationClient, getObject, listSharded } from './storage.js';
@@ -11,7 +10,7 @@ import { buildMigrationPlan } from './migration.js';
 import { runMigration } from './migration-runner.js';
 import { migrateProjectConfig } from './project-config.js';
 import { createScope } from './scope.js';
-import { createProgress } from './progress.js';
+import { createProgress, formatMigrationSummary } from './progress.js';
 import { readOnlyClient, readOnlyFetch } from './production-dry-run.js';
 
 const SAMPLE = Object.freeze({
@@ -189,7 +188,9 @@ export async function migrateCli(args, {
         devVarsPath: values['env-file'], retryMode: 'adaptive',
       }));
       if (fullValidation) {
-        const downloadDir = await fs.mkdtemp(path.join(os.tmpdir(), `da-migration-${daOrg}-${daSite}-`));
+        const tmpRoot = path.resolve('tmp');
+        await fs.mkdir(tmpRoot, { recursive: true, mode: 0o700 });
+        const downloadDir = await fs.mkdtemp(path.join(tmpRoot, `da-migration-${daOrg}-${daSite}-`));
         report.sourceDump = downloadDir;
         report.sourceSnapshotComplete = false;
         progress.log(`Downloaded source files: ${downloadDir} (retained locally)`);
@@ -271,11 +272,24 @@ export async function migrateCli(args, {
     };
     report.projectConfig = await progress.run('Checking project config conflicts', () => migrateProjectConfig(configOptions));
     report.imageErrors = [];
+    report.uploadedImageUrls = [];
+    report.statuses = [];
+    report.results = [];
     const result = await progress.run(execute ? 'Running migration' : 'Inspecting target and planning images', () => runMigration(plan, {
       client: hlxClient, scope, execute, overwrite: values.overwrite,
       mediaToken: apiToken, daSourceToken: apiToken, fetchImpl: configOptions.fetchImpl,
-      onProgress: progress.onProgress,
+      onProgress: (event) => {
+        if (event.phase === 'Checking destination conflicts' && event.key && event.status) {
+          report.statuses.push({ key: event.key, status: event.status });
+        }
+        if (event.phase === 'Writing target objects' && event.key && event.status) {
+          report.results.push({ key: event.key, status: event.status, kind: event.kind });
+        }
+        if (event.phase === 'Uploading images') report.imageCandidates = event.total;
+        progress.onProgress(event);
+      },
       onImageError: (failure) => report.imageErrors.push(failure),
+      onImageUploaded: (url) => report.uploadedImageUrls.push(url),
     }));
     report.objects = result.objects;
     report.imageUrls = result.imageUrls;
@@ -309,6 +323,7 @@ export async function migrateCli(args, {
       progress.log(`Report: ${out}`);
       progress.close();
     }
+    progress.log(formatMigrationSummary(report));
   }
   return report;
 }

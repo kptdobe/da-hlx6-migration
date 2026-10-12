@@ -71,6 +71,11 @@ image uploads, content writes, and project config reads/writes report their stag
 Object progress is throttled to once per five seconds, with immediate stage changes and completion.
 While waiting on asynchronous operations, a heartbeat repeats the current activity every 15 seconds.
 Credentials, tokens, config contents, and object bodies are not printed.
+The final automatic output summarizes elapsed seconds, new/overwritten writes,
+image uploads/errors, project-config status, warnings/blockers, and the retained
+source location as `./tmp/...`. Success, blocked execution, and dry-runs have
+distinct headings. Completed writes and image uploads are tracked as they happen
+so later failures still report partial work.
 
 Inventory a live DA source and an HLX6 target, including cross-org migrations:
 
@@ -101,7 +106,9 @@ To download source objects and perform the previous full dry-run validation, opt
 node bin/migrate.js --dry-run --full-validation source-org/source-site target-org/target-site
 ```
 
-Full validation downloads source content and retains a private local temp snapshot
+Full validation downloads source content and retains a private local snapshot under
+`./tmp/da-migration-{source-org}-{source-site}-{unique-id}/` in the directory
+where the command is run. The snapshot is excluded from Git. It is saved
 while running body-dependent planning and conflict checks; it still performs no
 uploads or remote writes. Execution retains the same kind of snapshot. The CLI
 prints the directory before downloading and records it as `sourceDump` in the
@@ -116,8 +123,8 @@ retained after success or failure; `snapshot.json` and `sourceSnapshotComplete`
 indicate whether every object was downloaded. Incomplete snapshots cannot be
 reused for planning. Directories are owner-only (0700), files are 0600. These
 snapshots contain confidential production content: move them somewhere durable
-if needed and remove them when no longer needed; the OS may eventually clean
-its temp directory. Image bytes fetched separately for media uploads are not
+if needed and remove them when no longer needed; `./tmp/` snapshots are not
+automatically removed. Image bytes fetched separately for media uploads are not
 part of this source snapshot.
 
 The planner still consumes buffers in memory. Persistence adds inspection and

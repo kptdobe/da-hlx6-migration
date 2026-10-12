@@ -1,6 +1,55 @@
 import { it } from 'node:test';
 import assert from 'node:assert/strict';
-import { createProgress } from '../src/progress.js';
+import { createProgress, formatMigrationSummary } from '../src/progress.js';
+
+it('formats the final execution summary with exact write counts and a local snapshot path', () => {
+  const statuses = Array.from({ length: 29 }, (_, index) => ({ key: `file-${index}`, status: index < 27 ? 'overwrite' : 'planned' }));
+  const summary = formatMigrationSummary({
+    dryRun: false, startedAt: '2026-10-12T00:00:00.000Z', finishedAt: '2026-10-12T00:00:15.000Z',
+    statuses, results: statuses.map(({ key }) => ({ key, status: 'written' })),
+    uploadedImageUrls: Array.from({ length: 11 }, (_, index) => `image-${index}`),
+    imageErrors: [], projectConfig: { status: 'exists' }, warnings: [], blockers: [],
+    sourceObjects: 39, sourceSnapshotComplete: true, sourceDump: '/repo/tmp/xwz',
+  }, '/repo');
+  assert.equal(summary, [
+    'Migration succeeded in **15 seconds**.', '',
+    '- **29 objects written:** 27 overwritten, 2 newly created.',
+    '- **11 images uploaded**, no image errors.',
+    '- Project config already matched; no warnings or blockers.',
+    '- All **39 source objects** retained locally: `./tmp/xwz`.',
+  ].join('\n'));
+});
+
+it('formats blocked and partial execution without claiming success', () => {
+  const summary = formatMigrationSummary({
+    dryRun: false, startedAt: '2026-10-12T00:00:00.000Z', finishedAt: '2026-10-12T00:00:03.000Z',
+    statuses: [{ key: 'existing', status: 'overwrite' }], results: [{ key: 'existing', status: 'written' }],
+    uploadedImageUrls: ['image'], imageErrors: [{ url: 'failed' }],
+    projectConfig: { status: 'planned' }, warnings: [{ count: 1 }], blockers: ['Storage unavailable'],
+    sourceSnapshotComplete: false, sourceDump: '/repo/tmp/partial',
+  }, '/repo');
+  assert.match(summary, /Migration blocked after \*\*3 seconds\*\*/);
+  assert.match(summary, /1 object written/);
+  assert.match(summary, /1 image uploaded/);
+  assert.match(summary, /original URLs retained/);
+  assert.match(summary, /Storage unavailable/);
+  assert.match(summary, /Partial source snapshot.*\.\/tmp\/partial/);
+  assert.doesNotMatch(summary, /Migration succeeded/);
+});
+
+it('formats listing-only dry-run results without claiming writes or uploads', () => {
+  const summary = formatMigrationSummary({
+    dryRun: true, validation: 'inventory',
+    startedAt: '2026-10-12T00:00:00.000Z', finishedAt: '2026-10-12T00:00:02.000Z',
+    sourceObjects: 10, sourceBytes: 1234, targetObjects: 0, targetBytes: 0,
+    warnings: [], blockers: [],
+  });
+  assert.match(summary, /Dry-run completed in \*\*2 seconds\*\*/);
+  assert.match(summary, /10 source objects.*1,234 stored bytes/);
+  assert.match(summary, /0 target objects/);
+  assert.match(summary, /No content writes or image uploads/);
+  assert.doesNotMatch(summary, /Migration succeeded|objects written/);
+});
 
 it('prints scope summaries, throttles item output, and always prints completion', () => {
   const lines = [];

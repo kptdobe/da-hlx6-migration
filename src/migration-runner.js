@@ -65,7 +65,7 @@ export async function inspectDestination(client, scope, objects, {
   return statuses;
 }
 
-async function prepareImages(objects, { scope, mediaToken, daSourceToken, fetchImpl, onProgress, onImageError }) {
+async function prepareImages(objects, { scope, mediaToken, daSourceToken, fetchImpl, onProgress, onImageError, onImageUploaded }) {
   const references = new Map();
   objects.filter((object) => object.contentType === 'text/html').forEach((object) => {
     collectExternalImageUrls(object.body.toString('utf8'), scope.org, scope.hlx6Site).forEach((url) => {
@@ -87,6 +87,7 @@ async function prepareImages(objects, { scope, mediaToken, daSourceToken, fetchI
     try {
       const uploaded = await uploadImage(url, { apiUrl, mediaToken, daSourceToken, fetchImpl });
       replacements.set(url, uploaded.relativeUrl);
+      onImageUploaded(url);
     } catch (error) {
       const failure = { url, error: error.message, sourceKeys: [...references.get(url)], action: 'kept-original-url' };
       imageErrors.push(failure);
@@ -131,6 +132,7 @@ export async function runMigration(plan, {
   fetchImpl,
   onProgress = () => {},
   onImageError = () => {},
+  onImageUploaded = () => {},
 }) {
   const statuses = await inspectDestination(client, scope, plan.objects, { overwrite, onProgress });
   if (!execute) {
@@ -147,7 +149,7 @@ export async function runMigration(plan, {
   }
 
   const { replacements, imageErrors, urls } = await prepareImages(plan.objects, {
-    scope, mediaToken, daSourceToken, fetchImpl, onProgress, onImageError,
+    scope, mediaToken, daSourceToken, fetchImpl, onProgress, onImageError, onImageUploaded,
   });
   onProgress({ phase: 'Preparing target objects' });
   const objects = plan.objects.map((object) => prepareObject(object, replacements, scope));

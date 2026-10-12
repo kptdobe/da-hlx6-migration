@@ -106,6 +106,10 @@ it('executes cross-org migrations with resolved bus IDs and target-only writes',
     }]);
     assert.equal(report.warnings.find(({ id }) => id === 'image-upload-errors').count, 1);
     assert.deepEqual(JSON.parse(await fs.readFile(path.join(directory, 'report.json'), 'utf8')).imageErrors, report.imageErrors);
+    assert.match(messages.at(-1), /Migration succeeded in/);
+    assert.match(messages.at(-1), /1 object written.*0 overwritten, 1 newly created/);
+    assert.match(messages.at(-1), /original URLs retained/);
+    assert.match(messages.at(-1), /\.\/tmp\//);
   } finally {
     if (downloadedSource) await fs.rm(downloadedSource, { recursive: true, force: true });
     for (const key of envKeys) {
@@ -157,6 +161,62 @@ it('blocks invalid execution configs and roles before constructing a write clien
       assert.ok(configs.calls.every((name) => name === 'GetObjectCommand'));
     }
   } finally {
+    for (const key of envKeys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+it('retains completed write and image counts in the report and final summary after a later write failure', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'migration-partial-summary-'));
+  const envFile = path.join(directory, 'env');
+  const envKeys = ['S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY', 'S3_DEF_URL'];
+  const previous = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+  await fs.writeFile(envFile, 'S3_ACCESS_KEY_ID=test\nS3_SECRET_ACCESS_KEY=test\nS3_DEF_URL=https://example.com\n');
+  const imageUrl = 'https://content.da.live/source-org/source-site/image.png';
+  const da = fakeClient({
+    'source-org/source-site/a.html': { body: `<main><img src="${imageUrl}"></main>`, metadata: { id: 'a' } },
+    'source-org/source-site/b.html': { body: '<main>later</main>', metadata: { id: 'b' } },
+  });
+  const configs = fakeClient({
+    'orgs/source-org/sites/source-site.json': { body: JSON.stringify({ content: { contentBusId: 'a'.repeat(59) } }) },
+    'orgs/target-org/sites/target-site.json': { body: JSON.stringify({ content: {
+      contentBusId: 'b'.repeat(59), source: { url: 'https://api.aem.live/target-org/sites/target-site/source' },
+    } }) },
+  });
+  const messages = [];
+  const progress = { summary() {}, log(message) { messages.push(message); }, onProgress() {}, close() {}, async run(label, operation) { return operation(); } };
+  let downloadedSource;
+  try {
+    const report = await migrateCli([
+      'source-org/source-site', 'target-org/target-site', '-x', '--refresh-source',
+      '-e', envFile, '-o', path.join(directory, 'report.json'),
+    ], {
+      progress, createReadClient: (backend) => (backend === 'da' ? da : configs), tokenProvider: () => 'test-token',
+      createWriteClient: () => ({ async send(command) {
+        if (command.constructor.name === 'ListObjectsV2Command') return { Contents: [] };
+        if (command.input.Key.endsWith('/b.html')) throw new Error('Storage unavailable');
+        return {};
+      } }),
+      fetchImpl: async (url, options = {}) => {
+        if (url.startsWith('https://admin.da.live/')) return { status: 404 };
+        if (options.method === 'POST') return { ok: true, json: async () => ({ uri: 'https://main--target-site--target-org.aem.page/media_a.png' }) };
+        assert.equal(url, imageUrl);
+        return { ok: true, headers: new Headers({ 'content-type': 'image/png' }), arrayBuffer: async () => new Uint8Array([1]).buffer };
+      },
+    });
+    downloadedSource = report.sourceDump;
+    assert.deepEqual(report.blockers, ['Storage unavailable']);
+    assert.deepEqual(report.uploadedImageUrls, [imageUrl]);
+    assert.equal(report.results.filter(({ status }) => status === 'written').length, 1);
+    assert.match(messages.at(-1), /Migration blocked after/);
+    assert.match(messages.at(-1), /1 object written.*0 overwritten, 1 newly created/);
+    assert.match(messages.at(-1), /1 image uploaded/);
+    assert.doesNotMatch(messages.at(-1), /Migration succeeded/);
+  } finally {
+    if (downloadedSource) await fs.rm(downloadedSource, { recursive: true, force: true });
     for (const key of envKeys) {
       if (previous[key] === undefined) delete process.env[key];
       else process.env[key] = previous[key];
@@ -296,6 +356,7 @@ it('default dry-run reports listing sizes without source or target body/header r
 });
 
 it('full validation dry-runs cross-org sites with correct target keys, config URLs, and no writes', async () => {
+  const originalCwd = process.cwd();
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'migration-cli-'));
   const envFile = path.join(directory, 'env');
   const out = path.join(directory, 'report.json');
@@ -316,6 +377,7 @@ it('full validation dry-runs cross-org sites with correct target keys, config UR
   let downloadedSource;
   const progress = { summary() {}, log() {}, onProgress() {}, close() {}, async run(label, operation) { return operation(); } };
   try {
+    process.chdir(directory);
     const report = await migrateCli([source, target, '--full-validation', '-e', envFile, '-o', out], {
       createReadClient: (backend) => (backend === 'da' ? da : hlx),
       createWriteClient: () => { throw new Error('Write credentials must not be requested'); },
@@ -329,6 +391,7 @@ it('full validation dry-runs cross-org sites with correct target keys, config UR
     assert.equal(report.dryRun, true);
     assert.equal(report.validation, 'full');
     downloadedSource = report.sourceDump;
+    assert.equal(path.dirname(downloadedSource), path.resolve('tmp'));
     assert.equal(report.sourceSnapshotComplete, true);
     assert.equal(await fs.readFile(path.join(downloadedSource, 'files/index.html'), 'utf8'), '<body><main>Event</main></body>');
     assert.equal((await fs.stat(downloadedSource)).mode & 0o777, 0o700);
@@ -348,6 +411,7 @@ it('full validation dry-runs cross-org sites with correct target keys, config UR
     assert.equal((await fs.stat(out)).mode & 0o777, 0o600);
     await assert.rejects(migrateCli([source, target, '-e', envFile, '-o', out], { progress }), /EEXIST/);
   } finally {
+    process.chdir(originalCwd);
     if (downloadedSource) await fs.rm(downloadedSource, { recursive: true, force: true });
     await fs.rm(directory, { recursive: true, force: true });
   }
