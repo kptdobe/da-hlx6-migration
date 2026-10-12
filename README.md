@@ -92,7 +92,7 @@ the same breakdown. Category totals add up to the complete site inventory.
 Sizes are storage sizes (including compression), not estimated migration output sizes.
 Source path checks run from the listing. Metadata/body-dependent checks are explicitly
 listed under `skippedChecks`: orphan version detection, migration planning, destination
-ownership/hash matching, external images, and project-config comparison. A successful
+ownership/hash matching, source-site image uploads, and project-config comparison. A successful
 inventory does not establish migration readiness or confirm existing content matches.
 
 To download source objects and perform the previous full dry-run validation, opt in:
@@ -139,6 +139,21 @@ This covers current content, trash, and version snapshots; supported objects
 continue migrating. File property sidecars remain excluded. Unusual names still require separate target read/authoring API
 compatibility validation. Previously renamed target objects are not automatically
 renamed or deleted; unplanned-object protection remains in force.
+
+Image selection follows api-service HTML POST keep rules for the target site:
+keep `https://main--{target-site}--{target-org}.aem.page/`, the corresponding
+`.aem.live/`, `./media_...`, and HTTPS `/adobe/dynamicmedia/deliver/` URLs on any
+host. Other image references are upload candidates, including
+`https://content.da.live/{source-org}/{source-site}/...`, source-site AEM URLs,
+and third-party URLs. Candidates in `srcset` are processed individually.
+DA authentication is sent only to the exact `https://content.da.live` origin.
+Successfully uploaded images are rewritten to target-relative media paths.
+If an individual fetch or upload fails, keep its original URL and continue;
+`imageErrors` records the URL, error, source-page keys, and `kept-original-url`
+action, also listed under `image-upload-errors` warnings. This fallback differs
+from api-service POST, which rejects failed image interning. Missing media API
+credentials remain a fatal setup error. `imageUrls` lists attempted candidates;
+`uploadedImageUrls` lists successful uploads. Inventory mode does not fetch images.
 
 The `.da` folder has no special migration treatment. Supported files (including
 `config.json`, arbitrary JSON, and comment JSON) and folder markers follow the

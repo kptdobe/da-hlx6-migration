@@ -133,7 +133,7 @@ export async function migrateCli(args, {
       { id: 'orphan-versions', reason: 'Requires source object identity metadata; inventory does not fetch headers' },
       { id: 'migration-plan', reason: 'Requires document metadata and audit/version bodies; use --full-validation' },
       { id: 'destination-ownership', reason: 'Requires migration hashes and target ownership metadata' },
-      { id: 'external-images', reason: 'Requires parsing source HTML bodies' },
+      { id: 'external-images', reason: 'API-compatible image upload selection requires parsing HTML bodies' },
       { id: 'project-config', reason: 'Project config comparison is part of --full-validation' },
     ] }),
   };
@@ -266,24 +266,37 @@ export async function migrateCli(args, {
       fetchImpl: execute ? fetchImpl : readOnlyFetch(fetchImpl),
     };
     report.projectConfig = await progress.run('Checking project config conflicts', () => migrateProjectConfig(configOptions));
+    report.imageErrors = [];
     const result = await progress.run(execute ? 'Running migration' : 'Inspecting target and planning images', () => runMigration(plan, {
       client: hlxClient, scope, execute, overwrite: values.overwrite,
       mediaToken: apiToken, daSourceToken: apiToken, fetchImpl: configOptions.fetchImpl,
       onProgress: progress.onProgress,
+      onImageError: (failure) => report.imageErrors.push(failure),
     }));
     report.objects = result.objects;
     report.imageUrls = result.imageUrls;
+    report.uploadedImageUrls = result.uploadedImageUrls || [];
+    report.imageErrors = result.imageErrors;
     report.statuses = [...result.statuses].map(([key, status]) => ({ key, status }));
     report.results = result.results;
     if (execute && report.projectConfig.status === 'planned') {
       report.projectConfig = await progress.run('Migrating project config', () => migrateProjectConfig({ ...configOptions, execute: true }));
     }
     progress.log(`Project config: ${report.projectConfig.status}`);
-    progress.log(`Objects: ${result.objects}; external images${execute ? '' : ' (not uploaded)'}: ${result.imageUrls.length}`);
+    progress.log(`Objects: ${result.objects}; image candidates: ${result.imageUrls.length}; uploaded: ${report.uploadedImageUrls.length}; failed URLs retained: ${report.imageErrors.length}`);
   } catch (error) {
     report.blockers.push(error.message);
     progress.log(`Blocked: ${error.message}`);
   } finally {
+    if (report.imageErrors?.length) {
+      report.warnings ||= [];
+      report.warnings.push({
+        id: 'image-upload-errors', severity: 'warning',
+        description: 'Failed image fetches/uploads kept their original URLs',
+        count: report.imageErrors.length, items: report.imageErrors,
+      });
+      progress.log(`Image errors: ${report.imageErrors.length}; original URLs preserved; see report`);
+    }
     report.finishedAt = new Date().toISOString();
     try {
       await reportFile.writeFile(JSON.stringify(report, null, 2));

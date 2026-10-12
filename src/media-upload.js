@@ -1,7 +1,7 @@
 const MAX_REGULAR_UPLOAD_BYTES = 5_000_000;
 
 /**
- * Fetches an external image and uploads it through the hlx6 media API.
+ * Fetches an image upload candidate and uploads it through the hlx6 media API.
  * @param {string} imageUrl
  * @param {object} opts
  * @param {string} opts.apiUrl
@@ -19,7 +19,7 @@ export async function uploadImage(imageUrl, {
   if (!mediaToken) throw new Error('An API token is required to upload images');
 
   const imageHeaders = {};
-  if (daSourceToken && new URL(imageUrl).hostname.endsWith('content.da.live')) {
+  if (daSourceToken && new URL(imageUrl).origin === 'https://content.da.live') {
     imageHeaders.authorization = `Bearer ${daSourceToken}`;
   }
   const imageResponse = await fetchImpl(imageUrl, { headers: imageHeaders });

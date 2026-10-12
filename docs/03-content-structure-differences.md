@@ -61,7 +61,7 @@ The sample sets differ only by user actions: `frescopa-logo-1.svg` vs `frescopa-
 |---|---|---|---|---|---|
 | 1 | Key / path layout | `{org}/{site}/{path}` | `{target-org}/{target-site}/{path}` | ordinary source paths reused verbatim; no filename renaming | no |
 | 2 | Documents (.html) | raw, `text/html`; e.g. `<main><div><p>…</p></div></main>` on one line | **gzip**; **re-serialized** by hlx6 (pretty-printed, so the uncompressed size differs: 110 → 114 bytes) | Bodies are equal after whitespace normalization. Write as-is (hlx6 accepts it) or reformat | no |
-| 2b | Images in HTML | External URLs kept (e.g. `raw.githubusercontent.com/...`) | **Interned** into the media bus and rewritten to `https://main--{site}--{org}.aem.page/media_{hash}...` | Intern every non-allowed image URL into `helix-media-bus`, then rewrite the `src`/`srcset` | no (needs fetch) |
+| 2b | Images in HTML | Source-site and third-party URLs | API POST keep-prefix rules for the target; other references are interned | DA URLs and other non-kept references are uploaded; successes become relative media paths; failed URLs stay unchanged with report warnings | no for successes; failed references remain dependent on their original host |
 | 3 | Sheets (.json) | raw | gzip, **byte-identical** after gunzip | gzip | no |
 | 4 | Media / binaries | raw, stored in the site tree | Sample objects happened to be gzip-encoded and are byte-identical after gunzip. Gzip is not required; migration will store binary media uncompressed. | omit `Content-Encoding` | no |
 | 5 | Folders | `{folder}.props` (body `{}`, no metadata) | `{folder}/.props` (body `{}` gzipped, with `doc-id`, `last-modified-by`, `uncompressed-length`) | move the marker + generate metadata | no |

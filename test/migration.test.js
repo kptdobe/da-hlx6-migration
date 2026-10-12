@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  buildMigrationPlan, collectExternalImageUrls, firstEmail, parseAudit, rewriteImageUrls,
+  buildMigrationPlan, collectImageUrls, collectExternalImageUrls, firstEmail, parseAudit, rewriteImageUrls,
 } from '../src/migration.js';
 import { classifyDa } from '../src/classify.js';
 
@@ -211,29 +211,60 @@ describe('buildMigrationPlan', () => {
 });
 
 describe('image URL handling', () => {
-  const html = '<main><img src="https://images.example/a.jpg"><picture><source srcset="https://images.example/a.jpg 1x, https://images.example/b.jpg 2x"></picture><img src="./media_existing.png"></main>';
-  it('collects unique external src and srcset URLs, preserving allowed relative media URLs', () => {
-    assert.deepEqual(collectExternalImageUrls(html, 'kptdobe', 'sample'), [
-      'https://images.example/a.jpg',
-      'https://images.example/b.jpg',
+  const html = '<main><img src="https://content.da.live/kptdobe/sample/images/a.jpg"><picture><source srcset="https://content.da.live/kptdobe/sample/images/a.jpg 1x, https://main--sample--kptdobe.aem.page/media_b.jpg 2x"></picture><img src="https://images.example/external.jpg"><img src="./media_existing.png"></main>';
+  it('collects all image references for audits without applying the upload policy', () => {
+    assert.deepEqual(collectImageUrls(html), [
+      'https://content.da.live/kptdobe/sample/images/a.jpg',
+      'https://main--sample--kptdobe.aem.page/media_b.jpg',
+      'https://images.example/external.jpg',
+      './media_existing.png',
     ]);
+    assert.deepEqual(collectImageUrls('<template><img src="https://images.example/a.jpg?width=1&amp;crop=2"></template>'),
+      ['https://images.example/a.jpg?width=1&crop=2']);
   });
-  it('rewrites src and srcset URLs to relative media references', () => {
+  it('collects images except the target-site, relative-media and Dynamic Media keep rules', () => {
+    assert.deepEqual(collectExternalImageUrls(html, 'kptdobe', 'sample'), [
+      'https://content.da.live/kptdobe/sample/images/a.jpg',
+      'https://images.example/external.jpg',
+    ]);
+    assert.deepEqual(collectExternalImageUrls('<img src="https://main--sample--kptdobe.aem.live/media_c.jpg">', 'kptdobe', 'sample'),
+      []);
+    assert.deepEqual(collectExternalImageUrls('<img src="./media_a.jpg"><img src="https://any.example/adobe/dynamicmedia/deliver/image.jpg">', 'kptdobe', 'sample'), []);
+  });
+  it('rewrites successful uploads but preserves already-target image references', () => {
     const result = rewriteImageUrls(html, new Map([
-      ['https://images.example/a.jpg', './media_a.jpg'],
-      ['https://images.example/b.jpg', './media_b.jpg'],
-    ]));
+      ['https://content.da.live/kptdobe/sample/images/a.jpg', './media_a.jpg'],
+      ['https://main--sample--kptdobe.aem.page/media_b.jpg', './media_b.jpg'],
+      ['https://images.example/external.jpg', './media_external.jpg'],
+    ]), 'kptdobe', 'sample');
     assert.match(result, /src="\.\/media_a\.jpg"/);
-    assert.match(result, /srcset="\.\/media_a\.jpg 1x, \.\/media_b\.jpg 2x"/);
+    assert.match(result, /srcset="\.\/media_a\.jpg 1x, https:\/\/main--sample--kptdobe\.aem\.page\/media_b\.jpg 2x"/);
     assert.match(result, /src="\.\/media_existing\.png"/);
+    assert.match(result, /src="\.\/media_external\.jpg"/);
   });
 
-  it('rewrites same-site media delivery URLs to relative paths', () => {
+  it('keeps source-site media delivery URLs unchanged until uploaded', () => {
     const source = '<main><img src="https://main--sample--kptdobe.aem.page/media_image.jpg#width=320"><source srcset="https://main--sample--kptdobe.aem.live/media_other.png 2x"></main>';
     const result = rewriteImageUrls(source, new Map(), 'kptdobe', 'sample');
 
-    assert.match(result, /src="\.\/media_image\.jpg#width=320"/);
-    assert.match(result, /srcset="\.\/media_other\.png 2x"/);
+    assert.equal(result, source);
+  });
+
+  it('collects non-kept references consistently with API POST selection', () => {
+    const urls = [
+      'https://content.da.live/kptdobe/sample-other/image.jpg',
+      'https://content.da.live/other/sample/image.jpg',
+      'https://content.da.live.evil.example/kptdobe/sample/image.jpg',
+      'https://main--sample--kptdobe.aem.page.evil.example/image.jpg',
+      'https://branch--sample--kptdobe.aem.page/image.jpg',
+      'https://main--other--kptdobe.aem.live/image.jpg',
+      'https://main--sample--other.aem.page/image.jpg',
+      'http://main--sample--kptdobe.aem.page/image.jpg',
+      'https://content.da.live:8443/kptdobe/sample/image.jpg',
+      '/images/local.jpg', 'data:image/png;base64,abc',
+    ];
+    const source = urls.map((url) => `<img src="${url}">`).join('');
+    assert.deepEqual(collectExternalImageUrls(source, 'kptdobe', 'sample'), urls);
   });
 
   it('keeps absolute media URLs for other sites and non-media paths', () => {

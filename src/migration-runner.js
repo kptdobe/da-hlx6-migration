@@ -65,28 +65,38 @@ export async function inspectDestination(client, scope, objects, {
   return statuses;
 }
 
-async function prepareImages(objects, { scope, mediaToken, daSourceToken, fetchImpl, onProgress }) {
-  const urls = [...new Set(objects
-    .filter((object) => object.contentType === 'text/html')
-    .flatMap((object) => collectExternalImageUrls(object.body.toString('utf8'), scope.org, scope.hlx6Site)))];
+async function prepareImages(objects, { scope, mediaToken, daSourceToken, fetchImpl, onProgress, onImageError }) {
+  const references = new Map();
+  objects.filter((object) => object.contentType === 'text/html').forEach((object) => {
+    collectExternalImageUrls(object.body.toString('utf8'), scope.org, scope.hlx6Site).forEach((url) => {
+      if (!references.has(url)) references.set(url, new Set());
+      references.get(url).add(object.sourceKey || object.key);
+    });
+  });
+  const urls = [...references.keys()];
   if (urls.length && !mediaToken) {
-    throw new Error(`External images require an API token (${urls.length} distinct URL(s))`);
+    throw new Error(`Images require an API token (${urls.length} distinct URL(s))`);
   }
   const replacements = new Map();
+  const imageErrors = [];
+  let completed = 0;
   const total = urls.length;
-  onProgress({ phase: 'Uploading external images', completed: 0, total });
+  onProgress({ phase: 'Uploading images', completed: 0, total });
   const apiUrl = `https://api.aem.live/${scope.org}/sites/${scope.hlx6Site}/media/`;
-  await processQueue(urls, async (url) => {
-    const uploaded = await uploadImage(url, {
-      apiUrl,
-      mediaToken,
-      daSourceToken,
-      fetchImpl,
-    });
-    replacements.set(url, uploaded.relativeUrl);
-    onProgress({ phase: 'Uploading external images', completed: replacements.size, total });
+  await processQueue([...urls], async (url) => {
+    try {
+      const uploaded = await uploadImage(url, { apiUrl, mediaToken, daSourceToken, fetchImpl });
+      replacements.set(url, uploaded.relativeUrl);
+    } catch (error) {
+      const failure = { url, error: error.message, sourceKeys: [...references.get(url)], action: 'kept-original-url' };
+      imageErrors.push(failure);
+      onImageError(failure);
+      onProgress({ phase: 'Image upload failed; keeping original URL', key: url, status: 'kept-original-url' });
+    }
+    completed += 1;
+    onProgress({ phase: 'Uploading images', completed, total });
   }, IMAGE_CONCURRENCY);
-  return replacements;
+  return { replacements, imageErrors, urls };
 }
 
 function prepareObject(object, replacements, scope) {
@@ -120,22 +130,24 @@ export async function runMigration(plan, {
   daSourceToken,
   fetchImpl,
   onProgress = () => {},
+  onImageError = () => {},
 }) {
   const statuses = await inspectDestination(client, scope, plan.objects, { overwrite, onProgress });
   if (!execute) {
-    onProgress({ phase: 'Collecting external image URLs (dry run; no uploads)' });
+    onProgress({ phase: 'Collecting image upload candidates (dry run; no uploads)' });
     return {
       dryRun: true,
       statuses,
       imageUrls: [...new Set(plan.objects
         .filter((object) => object.contentType === 'text/html')
         .flatMap((object) => collectExternalImageUrls(object.body.toString('utf8'), scope.org, scope.hlx6Site)))],
+      imageErrors: [],
       objects: plan.objects.length,
     };
   }
 
-  const replacements = await prepareImages(plan.objects, {
-    scope, mediaToken, daSourceToken, fetchImpl, onProgress,
+  const { replacements, imageErrors, urls } = await prepareImages(plan.objects, {
+    scope, mediaToken, daSourceToken, fetchImpl, onProgress, onImageError,
   });
   onProgress({ phase: 'Preparing target objects' });
   const objects = plan.objects.map((object) => prepareObject(object, replacements, scope));
@@ -181,7 +193,9 @@ export async function runMigration(plan, {
   return {
     dryRun: false,
     statuses,
-    imageUrls: [...replacements.keys()],
+    imageUrls: urls,
+    uploadedImageUrls: [...replacements.keys()],
+    imageErrors,
     objects: plan.objects.length,
     results,
   };

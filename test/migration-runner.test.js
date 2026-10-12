@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { gunzipSync } from 'node:zlib';
 import { inspectDestination, runMigration } from '../src/migration-runner.js';
 
 const scope = { org: 'kptdobe', daSite: 'sample-content-da', hlx6Site: 'sample-content-hlx6-migrated' };
@@ -108,6 +109,22 @@ describe('runMigration', () => {
     assert.equal(client.writes.length, 0);
   });
 
+  it('dry-run reports API upload candidates and excludes target-site URLs', async () => {
+    const client = fakeClient();
+    const sourceUrls = [
+      'https://content.da.live/adobecom/da-events/image.jpg',
+      'https://main--da-events--adobecom.aem.page/media_a.jpg',
+      'https://main--da-events--adobecom.aem.live/media_b.jpg',
+    ];
+    const html = `<main><img src="${sourceUrls[0]}"><source srcset="${sourceUrls[1]} 1x, ${sourceUrls[2]} 2x, https://external.example/image.jpg 3x"><img src="https://main--sample-content-hlx6-migrated--kptdobe.aem.page/media_target.jpg"></main>`;
+    const result = await runMigration({ objects: [{ ...object, body: Buffer.from(html) }] }, {
+      client, scope: { ...scope, daOrg: 'adobecom', daSite: 'da-events' },
+      fetchImpl: () => { throw new Error('Dry run must not fetch images'); },
+    });
+    assert.deepEqual(result.imageUrls, [...sourceUrls, 'https://external.example/image.jpg']);
+    assert.equal(client.writes.length, 0);
+  });
+
   it('still refuses unplanned target content when overwriting', async () => {
     const client = fakeClient(['kptdobe/sample-content-hlx6-migrated/manual.html']);
     await assert.rejects(runMigration({ objects: [object] }, {
@@ -142,7 +159,7 @@ describe('runMigration', () => {
       execute: true,
       onProgress: (event) => events.push(event),
     });
-    assert.ok(events.some((event) => event.phase === 'Uploading external images' && event.total === 0));
+    assert.ok(events.some((event) => event.phase === 'Uploading images' && event.total === 0));
     assert.equal(events.at(-1).completed, 1);
     assert.equal(events.at(-1).total, 1);
     assert.equal(events.at(-1).status, 'written');
@@ -153,11 +170,11 @@ describe('runMigration', () => {
     assert.equal(client.writes[0].Metadata['da-source-sha256'], sourceHash);
   });
 
-  it('refuses external-image documents without a media token before source writes', async () => {
+  it('refuses source-site image documents without a media token before source writes', async () => {
     const client = fakeClient();
     const imageDoc = {
       ...object,
-      body: Buffer.from('<main><img src="https://images.example/a.jpg"></main>'),
+      body: Buffer.from('<main><img src="https://content.da.live/kptdobe/sample-content-da/a.jpg"></main>'),
     };
     await assert.rejects(runMigration({ objects: [imageDoc] }, {
       client,
@@ -168,6 +185,59 @@ describe('runMigration', () => {
       execute: true,
     }), /API token/);
     assert.equal(client.writes.length, 0);
+  });
+
+  it('keeps failed image references and records every failure without blocking content writes', async () => {
+    const client = fakeClient();
+    const html = '<main><img src="https://events-data-dev.aws125.adobeitc.com/image.png"><source srcset="https://images.example/a.jpg 1x, https://images.example/b.jpg 2x"></main>';
+    const result = await runMigration({ objects: [{ ...object, body: Buffer.from(html) }] }, {
+      client, scope: { ...scope, daOrg: 'adobecom', write: [{ bucket: 'helix-source-bus', prefix: 'kptdobe/sample-content-hlx6-migrated/' }] },
+      execute: true,
+      mediaToken: 'test-token',
+      fetchImpl: () => { throw new Error('Image fetch failed (403)'); },
+    });
+    assert.equal(result.results.length, 1);
+    assert.equal(result.imageUrls.length, 3);
+    assert.equal(result.imageErrors.length, 3);
+    assert.ok(result.imageErrors.every(({ error, sourceKeys }) => error === 'Image fetch failed (403)' && sourceKeys.includes(object.key)));
+    assert.equal(gunzipSync(client.writes[0].Body).toString(), html);
+  });
+
+  it('uploads non-kept images and only rewrites successes when another image fails', async () => {
+    const client = fakeClient();
+    const sourceUrl = 'https://content.da.live/adobecom/sample-content-da/images/a.jpg';
+    const external = 'https://events-data-dev.aws125.adobeitc.com/image.png';
+    const html = `<main><img src="${sourceUrl}"><img src="${external}"></main>`;
+    const calls = [];
+    const result = await runMigration({ objects: [{ ...object, body: Buffer.from(html) }] }, {
+      client, scope: { ...scope, daOrg: 'adobecom', write: [{ bucket: 'helix-source-bus', prefix: 'kptdobe/sample-content-hlx6-migrated/' }] },
+      execute: true, mediaToken: 'media-token', daSourceToken: 'source-token',
+      fetchImpl: async (url, options) => {
+        calls.push({ url, method: options.method || 'GET' });
+        if (url === sourceUrl) {
+          assert.equal(options.headers.authorization, 'Bearer source-token');
+          return {
+            ok: true, headers: new Headers({ 'content-type': 'image/jpeg' }),
+            arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+          };
+        }
+        if (url === external) {
+          assert.equal(options.headers.authorization, undefined);
+          return { ok: false, status: 403 };
+        }
+        assert.equal(url, 'https://api.aem.live/kptdobe/sites/sample-content-hlx6-migrated/media/');
+        return { ok: true, json: async () => ({ uri: 'https://main--sample-content-hlx6-migrated--kptdobe.aem.page/media_abc.jpg' }) };
+      },
+    });
+    assert.deepEqual(result.imageUrls, [sourceUrl, external]);
+    assert.equal(calls.filter(({ method }) => method === 'GET').length, 2);
+    assert.equal(calls.filter(({ method }) => method === 'POST').length, 1);
+    assert.equal(result.imageErrors.length, 1);
+    assert.equal(result.imageErrors[0].url, external);
+    assert.match(result.imageErrors[0].error, /Image fetch failed \(403\)/);
+    const written = gunzipSync(client.writes[0].Body).toString();
+    assert.ok(written.includes('src="./media_abc.jpg"'));
+    assert.ok(written.includes(`src="${external}"`));
   });
 
   it('finishes writing versions before starting current documents', async () => {

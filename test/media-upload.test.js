@@ -49,6 +49,29 @@ describe('uploadImage', () => {
     assert.deepEqual(requests[0].headers, { authorization: 'Bearer da-read-token' });
   });
 
+  it('never forwards the DA token to lookalike hosts or other origins', async () => {
+    for (const imageUrl of [
+      'https://evilcontent.da.live/org/site/a.png',
+      'https://content.da.live.evil.example/org/site/a.png',
+      'http://content.da.live/org/site/a.png',
+      'https://content.da.live:8443/org/site/a.png',
+    ]) {
+      const requests = [];
+      await uploadImage(imageUrl, {
+        apiUrl: 'https://api.aem.live/org/sites/target/media/',
+        mediaToken: 'media-token', daSourceToken: 'da-read-token',
+        fetchImpl: async (url, options) => {
+          requests.push({ url, headers: options.headers });
+          return url.includes('/media/')
+            ? response({ json: { uri: 'https://main--target--org.aem.page/media_a.png' } })
+            : response({ contentType: 'image/png' });
+        },
+      });
+      assert.deepEqual(requests[0].headers, {});
+      assert.equal(requests[1].headers.authorization, 'Bearer media-token');
+    }
+  });
+
   it('requires media API credentials and rejects oversized images before upload', async () => {
     await assert.rejects(uploadImage('https://images.example/a.jpg', {
       apiUrl: 'https://api.aem.live/org/sites/target/media/',

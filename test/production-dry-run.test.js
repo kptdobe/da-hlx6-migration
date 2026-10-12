@@ -25,7 +25,7 @@ it('executes cross-org migrations with resolved bus IDs and target-only writes',
   const previous = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
   await fs.writeFile(envFile, 'S3_ACCESS_KEY_ID=test\nS3_SECRET_ACCESS_KEY=test\nS3_DEF_URL=https://example.com\n');
   const da = fakeClient({
-    'source-org/source-site/My Page.html': { body: '<main>event</main>', metadata: { id: 'source-document' } },
+    'source-org/source-site/My Page.html': { body: '<main>event<img src="https://images.example/fail.png"></main>', metadata: { id: 'source-document' } },
     'source-org/source-site/unsupported.link': { body: 'linkdata' },
   });
   const configs = fakeClient({
@@ -77,6 +77,7 @@ it('executes cross-org migrations with resolved bus IDs and target-only writes',
       tokenProvider: () => 'test-token',
       fetchImpl: async (url, options = {}) => {
         apiCalls.push({ url, method: options.method || 'GET' });
+        if (url === 'https://images.example/fail.png') return { ok: false, status: 403 };
         return { ok: true, json: async () => (url.startsWith('https://admin.da.live/')
           ? { data: [{ key: 'test', value: 'value' }] } : {}) };
       },
@@ -93,9 +94,16 @@ it('executes cross-org migrations with resolved bus IDs and target-only writes',
     assert.ok(messages.includes('SKIPPED unsupported-extension: source-org/source-site/unsupported.link'));
     assert.deepEqual(writes, ['target-org/target-site/My Page.html']);
     assert.equal(report.projectConfig.status, 'written');
-    assert.deepEqual(apiCalls.map(({ method }) => method), ['GET', 'GET', 'GET', 'GET', 'POST']);
+    assert.deepEqual(apiCalls.map(({ method }) => method), ['GET', 'GET', 'GET', 'GET', 'GET', 'POST']);
     assert.equal(apiCalls[0].url, 'https://admin.da.live/config/source-org/source-site');
     assert.equal(apiCalls.at(-1).url, 'https://api.aem.live/target-org/sites/target-site/config/editor/da.json');
+    assert.deepEqual(report.imageErrors, [{
+      url: 'https://images.example/fail.png',
+      error: 'Image fetch failed (403): https://images.example/fail.png',
+      sourceKeys: ['source-org/source-site/My Page.html'], action: 'kept-original-url',
+    }]);
+    assert.equal(report.warnings.find(({ id }) => id === 'image-upload-errors').count, 1);
+    assert.deepEqual(JSON.parse(await fs.readFile(path.join(directory, 'report.json'), 'utf8')).imageErrors, report.imageErrors);
   } finally {
     for (const key of envKeys) {
       if (previous[key] === undefined) delete process.env[key];

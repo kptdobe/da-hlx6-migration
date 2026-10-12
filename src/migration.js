@@ -250,33 +250,10 @@ function parseSrcset(value) {
   return candidates;
 }
 
-function relativeSameSiteMediaUrl(url, org, site) {
-  if (!org || !site || !/^https:\/\//i.test(url)) return undefined;
-  let parsed;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return undefined;
-  }
-  if (parsed.protocol !== 'https:' || parsed.port || parsed.username || parsed.password) return undefined;
-
-  const hostname = parsed.hostname.toLowerCase();
-  const suffix = `--${site.toLowerCase()}--${org.toLowerCase()}.aem.`;
-  const hostSuffix = ['page', 'live'].find((domain) => hostname.endsWith(`${suffix}${domain}`));
-  if (!hostSuffix) return undefined;
-  const branch = hostname.slice(0, -(suffix.length + hostSuffix.length));
-  if (!branch || branch.includes('.')) return undefined;
-
-  const mediaPath = parsed.pathname.match(/^\/(media_[^/]+)$/);
-  if (!mediaPath) return undefined;
-  return `./${mediaPath[1]}${parsed.search}${parsed.hash}`;
-}
-
 function shouldKeepImageUrl(url, org, site) {
-  if (!/^https?:\/\//i.test(url)) return true;
-  return url.startsWith(`https://main--${site}--${org}.aem.page/`)
-    || url.startsWith(`https://main--${site}--${org}.aem.live/`)
-    || relativeSameSiteMediaUrl(url, org, site)
+  return url.startsWith('./media_')
+    || Boolean(org && site && (url.startsWith(`https://main--${site}--${org}.aem.page/`)
+      || url.startsWith(`https://main--${site}--${org}.aem.live/`)))
     || /^https:\/\/[^/]+\/adobe\/dynamicmedia\/deliver\//.test(url);
 }
 
@@ -286,32 +263,39 @@ function visitElements(node, callback) {
   if (node.content) visitElements(node.content, callback);
 }
 
-export function collectExternalImageUrls(html, org, site) {
+export function collectImageUrls(html) {
   const urls = new Set();
   visitElements(parse(html), (node) => {
     if (!['img', 'source'].includes(node.tagName)) return;
     (node.attrs || []).forEach(({ name, value }) => {
-      if (name === 'src' && !shouldKeepImageUrl(value, org, site)) urls.add(value);
+      if (name === 'src') urls.add(value);
       if (name === 'srcset') {
-        parseSrcset(value).filter(({ url }) => !shouldKeepImageUrl(url, org, site))
-          .forEach(({ url }) => urls.add(url));
+        parseSrcset(value).forEach(({ url }) => urls.add(url));
       }
     });
   });
   return [...urls];
 }
 
+export function collectExternalImageUrls(html, org, site) {
+  return collectImageUrls(html).filter((url) => !shouldKeepImageUrl(url, org, site));
+}
+
 export function rewriteImageUrls(html, replacements, org, site) {
+  if (!replacements.size) return html;
+  const rewrittenUrl = (url) => (shouldKeepImageUrl(url, org, site) ? url : replacements.get(url) || url);
   const document = parse(html);
   visitElements(document, (node) => {
     if (!['img', 'source'].includes(node.tagName)) return;
     node.attrs = (node.attrs || []).map(({ name, value }) => {
       if (name === 'src') {
-        return { name, value: replacements.get(value) || relativeSameSiteMediaUrl(value, org, site) || value };
+        return { name, value: rewrittenUrl(value) };
       }
       if (name === 'srcset') {
-        const rewritten = parseSrcset(value).map(({ url, descriptor }) => (
-          `${replacements.get(url) || relativeSameSiteMediaUrl(url, org, site) || url}${descriptor ? ` ${descriptor}` : ''}`
+        const candidates = parseSrcset(value);
+        if (candidates.every(({ url }) => rewrittenUrl(url) === url)) return { name, value };
+        const rewritten = candidates.map(({ url, descriptor }) => (
+          `${rewrittenUrl(url)}${descriptor ? ` ${descriptor}` : ''}`
         )).join(', ');
         return { name, value: rewritten };
       }

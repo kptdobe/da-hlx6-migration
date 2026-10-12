@@ -133,23 +133,23 @@ Saved versions migrate one to one. **Editing sessions that did not create a vers
 
 ## 4. Images that cannot be uploaded
 
-**Problem.** hlx6 does not accept external image URLs in a page: they must be uploaded to the site's media folder and referenced as `./media_{hash}.{ext}`. The migration does this through the official media API (`POST /{org}/sites/{site}/media/`), which validates each image the same way as an author upload. Some images will fail:
+**Policy.** Follow api-service HTML POST's target keep rules (main target AEM page/live URLs, `./media_`, and Dynamic Media delivery). Other references, including `content.da.live` URLs and third-party images, are upload candidates. Successful uploads are rewritten; each failure keeps its original URL and logs an error with source-page references. Images can still fail:
 - the URL no longer exists
 - the regular media upload request is too large for API Gateway/Lambda (about 5 MB); this is an ingestion limit, not a delivery limit. The media validator permits larger files (default 20 MB), and issue #403 proposes direct/presigned upload to bypass the request-body cap.
 - an SVG is rejected because it contains scripts
 - the type is not supported
 
-**Why it matters.** hlx6 refuses to save a page that still has an external image. A migrated page with a broken image could be opened but **not saved** from the editor until the image is fixed.
+**Why it matters.** Failed image fetches/uploads no longer abort migration. Preserving the original reference does not restore an unavailable image or guarantee later target authoring compatibility; api-service POST itself still rejects failed interning.
 
 **Options**
 
 | | Approach | Pros | Cons |
 |---|---|---|---|
-| A | Keep the external URL; report it | Page migrated as-is | Page can't be saved from the hlx6 editor until fixed; large uploads remain blocked until the direct-upload path exists |
+| A | Keep a failed source-site URL; report it | Page data preserved | Requires explicit fallback approval; large source-site uploads still need a supported route |
 | B | Replace with a placeholder; report it | Page saves | Content changed silently on the live site at next publish |
 | C | Don't migrate the page; report it | Explicit | Page missing after migration |
 
-**Rec.** Use the official media API for sizes it accepts. For larger images, wait for or implement the direct-upload path in issue #403; do not treat the delivery size as the constraint. Block only the affected image/page until there is a supported upload route.
+**Current behavior.** Attempt all non-kept candidates, keep failed URLs unchanged, report each error, and continue. For larger candidates, a direct-upload path may still be needed to eliminate the warning; delivery limits are not ingestion limits.
 
 ---
 

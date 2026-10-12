@@ -38,7 +38,7 @@ The migration writes these metadata keys **now**, so no second pass is needed on
 | R6 | `.da-versions/{id}/{vid}.{ext}` | `{o}/{s}/.versions/{docId(id)}/{versionUlid}` (no extension) | preserve raw body; text may be gzip-encoded, binary media remains uncompressed | §4 | |
 | R7 | `.da-versions/{id}/` with no live or trash doc | same as R6 (orphan versions) | | §4 | hlx6 behaves the same after the trash is emptied |
 | R8 | `.da-versions/{id}/audit*.txt` | not written to the source bus | - | - | used as input for §4; raw files archived with the migration manifest. **Review**: acceptable to drop edit-only events from the UI? |
-| R9 | `<img src>`, `<source srcset>` in html | - | rewrite to **relative** `./media_{hash}.{ext}` after uploading the image to the hlx6 site's media bus with the **media API** (see §8) | - | covers previewed and never-previewed pages the same way |
+| R9 | `<img src>`, `<source srcset>` in html | - | use API target keep rules; upload other image URLs including DA content URLs; rewrite successes to `./media_{hash}.{ext}`; keep failures unchanged | - | errors and source-page references logged; migration continues (§8) |
 | R10 | `.da/**` | ordinary path mapping under `{o}/{s}/.da/` | per R1-R4 | common | no folder-specific exception or exclusion |
 | R11 | `.da/comments/**` | ordinary path mapping per R10 | JSON per R2 | common | data copied; no comment-ID reattachment or comment UI support |
 | R12 | unsupported extensions, `*.ext.props` sidecars | not migrated | - | - | warning, independent of folder name; unsupported objects are listed with an exclusion reason and never written |
@@ -113,10 +113,10 @@ helix-api-service exposes `POST https://api.aem.live/{org}/sites/{hlx6-site}/med
 The hash is `"1" + sha1(contentLength + first 8 KiB)` (`src/media.js` `mediaHash`, verified against a real image). It is the same on every site. With the team's stable `contentBusId` decision, a da page's previewed media and the hlx6 project use the same `{contentBusId}/{hash}` object; reuse it if present. If the object is absent (for example, the page was never previewed), upload through the media API into that same site-scoped folder.
 
 ### Per image
-1. Compute the media hash from the available bytes and check `helix-media-bus/{hlx6-content-bus-id}/{hash}`. If present, reuse it without uploading.
-2. If missing, fetch the image bytes from the original URL (`raw.githubusercontent.com`, `content.da.live` with the DA token, etc.) and `POST` the bytes to the hlx6 media API. Bytes are preferred over `{url}`: no 5 s fetch timeout, no auth to forward, same result.
-3. Rewrite `src`/`srcset` to `./media_{hash}.{ext}`, using the `uri` returned by the API or the verified existing hash.
-4. On failure (fetch 404, upload-size limit, 409 validation, 415 type): log it in the manifest and report it. What goes into the page is a decision (see below).
+1. Keep the api-service target prefixes: main target `.aem.page/` and `.aem.live/`, `./media_`, and HTTPS `/adobe/dynamicmedia/deliver/` URLs on any host. Other image references are upload candidates; this includes `https://content.da.live/{source-org}/{source-site}/...`. The migration parses each `srcset` candidate individually.
+2. Fetch candidates and POST their bytes to the target media API, which handles hash deduplication. Send the DA token only to the exact `https://content.da.live` origin, never to lookalike hosts or third parties.
+3. Rewrite only successful uploads to the returned relative media path. Failed URLs and kept-prefix URLs remain unchanged.
+4. Individual fetch/upload failures do not block migration: record each URL, error, source keys, and `kept-original-url` action in `imageErrors` and warning entries. This deliberately differs from api-service POST's HTTP 400 on failure. Missing media credentials remain a fatal setup error.
 
 ### Why the API and not a direct media-bus write
 - Same validation as an author upload (size limits, SVG sanitization), so we never store a file hlx6 would refuse.
@@ -127,9 +127,9 @@ The hash is `"1" + sha1(contentLength + first 8 KiB)` (`src/media.js` `mediaHash
 With a stable `contentBusId`, previewed da images are already in the target site's media folder; no media-bucket copy is needed. For never-previewed images above the regular endpoint's request-size limit, the migration needs the direct/presigned upload flow in issue #403 before it can ingest them. The migration role still needs no media-bucket write permission.
 
 ### Decision needed
-Images that cannot be uploaded (broken URL, too large, rejected SVG):
+Image upload candidates that fail (broken URL, too large, rejected SVG):
 - (a) keep the external URL in the stored HTML. The page is stored, but saving it from the hlx6 editor later fails until the image is fixed (PUT rejects external images).
 - (b) replace the image with a placeholder and report it.
 - (c) do not migrate the page; report it.
 
-Proposal: **(a)**, with a blocking pre-flight count so the site owner fixes them first.
+Current behavior: keep each failed image URL unchanged, log its error and source-page references, and continue migrating content. Failed images may remain unavailable and later API PUT/POST may still reject them; migration fallback does not alter api-service validation.
