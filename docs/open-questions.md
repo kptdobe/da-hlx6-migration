@@ -170,7 +170,7 @@ Saved versions migrate one to one. **Editing sessions that did not create a vers
 
 ## 6. File types hlx6 does not accept
 
-**Problem.** hlx6 only stores `.html .json .gif .ico .jpeg .jpg .mp4 .pdf .png .svg`. da stores any file type (e.g. `.txt`, `.xml`, `.docx`, `.webp`).
+**Problem.** The migration supports `.avif .html .json .gif .ico .jpeg .jpg .mp4 .pdf .png .svg`. da stores any file type (e.g. `.txt`, `.xml`, `.docx`, `.webp`). Target API support must also be available for migrated types.
 
 **Options**
 

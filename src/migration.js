@@ -4,6 +4,7 @@ import { deterministicUlid } from './ulid.js';
 import { parse, serialize } from 'parse5';
 
 const CONTENT_TYPES = {
+  '.avif': 'image/avif',
   '.gif': 'image/gif',
   '.html': 'text/html',
   '.ico': 'image/x-icon',

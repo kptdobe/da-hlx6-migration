@@ -5,7 +5,7 @@ export const SOURCE_BUS = 'helix-source-bus';
 export const MEDIA_BUS = 'helix-media-bus';
 
 // Session tag keys; must match the policy variables in infra/aws/migration-role-policy.json.
-export const TAG_KEYS = ['org', 'da-site', 'hlx6-site', 'da-content-bus-id', 'hlx6-content-bus-id'];
+export const TAG_KEYS = ['org', 'da-site', 'hlx6-site', 'da-content-bus-id', 'hlx6-content-bus-id', 'da-org'];
 
 /**
  * Describes what one migration run may touch.
@@ -17,9 +17,9 @@ export const TAG_KEYS = ['org', 'da-site', 'hlx6-site', 'da-content-bus-id', 'hl
  * @param {string} spec.hlx6ContentBusId media-bus folder of the hlx6 site
  */
 export function createScope({
-  org, daSite, hlx6Site, daContentBusId, hlx6ContentBusId,
+  org, daOrg = org, daSite, hlx6Site, daContentBusId, hlx6ContentBusId,
 }) {
-  [['org', org], ['daSite', daSite], ['hlx6Site', hlx6Site]].forEach(([k, v]) => {
+  [['org', org], ['daOrg', daOrg], ['daSite', daSite], ['hlx6Site', hlx6Site]].forEach(([k, v]) => {
     if (!NAME.test(v || '')) throw new Error(`Invalid ${k}: ${v}`);
   });
   [['daContentBusId', daContentBusId], ['hlx6ContentBusId', hlx6ContentBusId]].forEach(([k, v]) => {
@@ -27,6 +27,7 @@ export function createScope({
   });
   return Object.freeze({
     org,
+    daOrg,
     daSite,
     hlx6Site,
     daContentBusId,
@@ -42,7 +43,7 @@ export function createScope({
  * @returns {{Key: string, Value: string}[]}
  */
 export function sessionTags(scope) {
-  const values = [scope.org, scope.daSite, scope.hlx6Site, scope.daContentBusId, scope.hlx6ContentBusId];
+  const values = [scope.org, scope.daSite, scope.hlx6Site, scope.daContentBusId, scope.hlx6ContentBusId, scope.daOrg || scope.org];
   return TAG_KEYS.map((Key, i) => ({ Key, Value: values[i] }));
 }
 

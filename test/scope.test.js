@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {
   createScope, sessionTags, sessionName, assertWritable,
 } from '../src/scope.js';
@@ -11,6 +12,14 @@ const spec = {
 };
 
 describe('createScope', () => {
+  it('separates the source organization from the target-only write prefix', () => {
+    const scope = createScope({ ...spec, daOrg: 'adobecom' });
+    assert.equal(scope.daOrg, 'adobecom');
+    assert.equal(scope.org, 'kptdobe');
+    assert.deepEqual(scope.write, [{ bucket: 'helix-source-bus', prefix: 'kptdobe/sample-content-hlx6-migrated/' }]);
+    assert.equal(sessionTags(scope).find(({ Key }) => Key === 'da-org').Value, 'adobecom');
+    assert.throws(() => createScope({ ...spec, daOrg: '*' }), /Invalid daOrg/);
+  });
   it('allows writes only to the hlx6 site in the source bus', () => {
     assert.deepEqual(createScope(spec).write, [
       { bucket: 'helix-source-bus', prefix: 'kptdobe/sample-content-hlx6-migrated/' },
@@ -39,6 +48,7 @@ describe('sessionTags', () => {
       { Key: 'hlx6-site', Value: 'sample-content-hlx6-migrated' },
       { Key: 'da-content-bus-id', Value: DA_MEDIA },
       { Key: 'hlx6-content-bus-id', Value: HLX6_MEDIA },
+      { Key: 'da-org', Value: 'kptdobe' },
     ]);
   });
   it('names the session after the hlx6 site, within the STS 64 char limit', () => {
@@ -67,5 +77,32 @@ describe('assertWritable', () => {
   });
   it('refuses path traversal out of the hlx6 site', () => {
     assert.throws(() => assertWritable(scope, 'helix-source-bus', 'kptdobe/sample-content-hlx6-migrated/../sample-content-hlx6/x.html'), /Write refused/);
+  });
+});
+
+describe('generic migration IAM templates', () => {
+  it('requires all scope tags from the trusted principal without approving particular sites', () => {
+    const policy = JSON.parse(readFileSync(new URL('../infra/aws/trust-policy.json', import.meta.url), 'utf8'));
+    const rule = policy.Statement[0];
+    assert.match(rule.Principal.AWS, /^arn:aws:iam::\d{12}:role\//);
+    assert.equal(rule.Condition.StringEquals, undefined);
+    assert.deepEqual(rule.Condition['ForAllValues:StringEquals']['aws:TagKeys'],
+      sessionTags(createScope(spec)).map(({ Key }) => Key));
+    for (const { Key } of sessionTags(createScope(spec))) {
+      assert.equal(rule.Condition.Null[`aws:RequestTag/${Key}`], 'false');
+    }
+  });
+
+  it('reads source config in the source org and confines writes to the target site', () => {
+    const policy = JSON.parse(readFileSync(new URL('../infra/aws/migration-role-policy.json', import.meta.url), 'utf8'));
+    const bySid = Object.fromEntries(policy.Statement.map((statement) => [statement.Sid, statement]));
+    assert.deepEqual(bySid.ReadSiteConfigs.Resource, [
+      'arn:aws:s3:::helix-config-bus/orgs/${aws:PrincipalTag/da-org}/sites/${aws:PrincipalTag/da-site}.json',
+      'arn:aws:s3:::helix-config-bus/orgs/${aws:PrincipalTag/org}/sites/${aws:PrincipalTag/hlx6-site}.json',
+    ]);
+    assert.equal(bySid.ReadWriteTargetSite.Resource,
+      'arn:aws:s3:::helix-source-bus/${aws:PrincipalTag/org}/${aws:PrincipalTag/hlx6-site}/*');
+    assert.equal(bySid.DenyWithoutSourceOrg.Effect, 'Deny');
+    assert.ok(bySid.NeverDeleteOrReconfigure.Action.includes('s3:DeleteObject'));
   });
 });

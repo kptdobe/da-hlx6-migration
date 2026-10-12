@@ -34,6 +34,28 @@ describe('parseAudit', () => {
 });
 
 describe('buildMigrationPlan', () => {
+  it('preserves AVIF bytes and uses image/avif without gzip for current, trash and version objects', () => {
+    const body = Buffer.from([0, 255, 128, 42]);
+    const plan = buildMigrationPlan([
+      entry('/images/photo.avif', body, { id: 'avif-id' }),
+      entry('/images/photo.AVIF', body),
+      entry('/.trash/photo.avif', body),
+      entry('/.da-versions/avif-id/v1.avif', body),
+    ], scope);
+    assert.equal(plan.objects.length, 4);
+    assert.deepEqual(plan.excluded, []);
+    assert.equal(plan.objects.find(({ sourceKey }) => sourceKey.endsWith('/images/photo.avif')).key,
+      'kptdobe/sample-content-hlx6-migrated/images/photo.avif');
+    assert.equal(plan.objects.find(({ sourceKey }) => sourceKey.endsWith('/images/photo.AVIF')).key,
+      'kptdobe/sample-content-hlx6-migrated/images/photo.AVIF');
+    assert.equal(plan.objects.find(({ kind }) => kind === 'trash').key,
+      'kptdobe/sample-content-hlx6-migrated/.trash/photo.avif');
+    for (const object of plan.objects) {
+      assert.equal(object.contentType, 'image/avif');
+      assert.equal(object.contentEncoding, undefined);
+      assert.deepEqual(object.body, body);
+    }
+  });
   it('maps trashed folder markers to child JSON markers while preserving original paths and identity', () => {
     const metadata = { id: 'folder-id', path: 'sample-content-da/en_us/index', timestamp: '1790864889099' };
     const plan = buildMigrationPlan([

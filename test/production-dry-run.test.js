@@ -8,12 +8,142 @@ import { readOnlyClient, readOnlyFetch } from '../src/production-dry-run.js';
 import { migrateCli } from '../src/migration-cli.js';
 import { fakeClient } from './fixtures/fake-client.js';
 
-it('rejects execution outside the approved sample before loading credentials or contacting sites', () => {
+it('requires a fresh source for execution on any site pair', () => {
   for (const flag of ['-x', '--execute']) {
     const result = spawnSync(process.execPath, ['bin/migrate.js', 'adobecom/da-events', 'kptdobe/da-events-migrated', flag], { encoding: 'utf8' });
     assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /Execution is restricted to the approved sample/);
+    assert.match(result.stderr, /Execution requires --refresh-source/);
     assert.equal(result.stdout, '');
+  }
+});
+
+it('executes cross-org migrations with resolved bus IDs and target-only writes', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'migration-execute-'));
+  const envFile = path.join(directory, 'env');
+  const roleArn = 'arn:aws:iam::123456789012:role/custom-migration';
+  const envKeys = ['S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY', 'S3_DEF_URL'];
+  const previous = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+  await fs.writeFile(envFile, 'S3_ACCESS_KEY_ID=test\nS3_SECRET_ACCESS_KEY=test\nS3_DEF_URL=https://example.com\n');
+  const da = fakeClient({
+    'source-org/source-site/My Page.html': { body: '<main>event</main>', metadata: { id: 'source-document' } },
+  });
+  const configs = fakeClient({
+    'orgs/source-org/sites/source-site.json': { body: JSON.stringify({ content: {
+      contentBusId: 'c'.repeat(59), fixedContentBusId: 'a'.repeat(59),
+    } }) },
+    'orgs/target-org/sites/target-site.json': { body: JSON.stringify({ content: {
+      contentBusId: 'd'.repeat(59), fixedContentBusId: 'b'.repeat(59),
+      source: { url: 'https://api.aem.live/target-org/sites/target-site/source' },
+    } }) },
+  });
+  const writes = [];
+  const apiCalls = [];
+  let scopedClientCreated = false;
+  const progress = { summary() {}, log() {}, onProgress() {}, close() {}, async run(label, operation) { return operation(); } };
+  try {
+    const report = await migrateCli([
+      'source-org/source-site', 'target-org/target-site', '-x', '--refresh-source', '--role-arn', roleArn,
+      '-e', envFile, '-o', path.join(directory, 'report.json'),
+    ], {
+      progress,
+      createReadClient: (backend) => (backend === 'da' ? da : configs),
+      createWriteClient: (scope, selectedRole) => {
+        scopedClientCreated = true;
+        assert.equal(selectedRole, roleArn);
+        assert.equal(scope.org, 'target-org');
+        assert.equal(scope.daOrg, 'source-org');
+        assert.equal(scope.daSite, 'source-site');
+        assert.equal(scope.hlx6Site, 'target-site');
+        assert.equal(scope.daContentBusId, 'a'.repeat(59));
+        assert.equal(scope.hlx6ContentBusId, 'b'.repeat(59));
+        assert.deepEqual(scope.write, [{ bucket: 'helix-source-bus', prefix: 'target-org/target-site/' }]);
+        assert.deepEqual(configs.calls, ['GetObjectCommand', 'GetObjectCommand']);
+        return {
+          async send(command) {
+            assert.equal(command.input.Bucket, 'helix-source-bus');
+            if (command.constructor.name === 'ListObjectsV2Command') {
+              assert.equal(command.input.Prefix, 'target-org/target-site/');
+              return { Contents: [] };
+            }
+            assert.equal(command.constructor.name, 'PutObjectCommand');
+            assert.equal(command.input.Key, 'target-org/target-site/My Page.html');
+            writes.push(command.input.Key);
+            return {};
+          },
+        };
+      },
+      tokenProvider: () => 'test-token',
+      fetchImpl: async (url, options = {}) => {
+        apiCalls.push({ url, method: options.method || 'GET' });
+        return { ok: true, json: async () => (url.startsWith('https://admin.da.live/')
+          ? { data: [{ key: 'test', value: 'value' }] } : {}) };
+      },
+    });
+    assert.equal(scopedClientCreated, true);
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.dryRun, false);
+    assert.equal(report.objects, 1);
+    assert.deepEqual(report.results, [{ key: 'target-org/target-site/My Page.html', status: 'written', kind: 'doc' }]);
+    assert.deepEqual(writes, ['target-org/target-site/My Page.html']);
+    assert.equal(report.projectConfig.status, 'written');
+    assert.deepEqual(apiCalls.map(({ method }) => method), ['GET', 'GET', 'GET', 'GET', 'POST']);
+    assert.equal(apiCalls[0].url, 'https://admin.da.live/config/source-org/source-site');
+    assert.equal(apiCalls.at(-1).url, 'https://api.aem.live/target-org/sites/target-site/config/editor/da.json');
+  } finally {
+    for (const key of envKeys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+it('blocks invalid execution configs and roles before constructing a write client', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'migration-scope-blockers-'));
+  const envFile = path.join(directory, 'env');
+  const envKeys = ['S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY', 'S3_DEF_URL'];
+  const previous = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+  await fs.writeFile(envFile, 'S3_ACCESS_KEY_ID=test\nS3_SECRET_ACCESS_KEY=test\nS3_DEF_URL=https://example.com\n');
+  const progress = { summary() {}, log() {}, onProgress() {}, close() {}, async run(label, operation) { return operation(); } };
+  try {
+    for (const scenario of ['missing-source', 'invalid-source-id', 'invalid-target-id', 'invalid-role']) {
+      const objects = {
+        'orgs/target-org/sites/target-site.json': { body: JSON.stringify({ content: {
+          contentBusId: scenario === 'invalid-target-id' ? '*' : 'b'.repeat(59),
+          source: { url: 'https://api.aem.live/target-org/sites/target-site/source' },
+        } }) },
+      };
+      if (scenario !== 'missing-source') objects['orgs/source-org/sites/source-site.json'] = {
+        body: JSON.stringify({ content: { contentBusId: scenario === 'invalid-source-id' ? '*' : 'a'.repeat(59) } }),
+      };
+      const configs = fakeClient(objects);
+      const report = await migrateCli([
+        'source-org/source-site', 'target-org/target-site', '-x', '--refresh-source',
+        '--role-arn', scenario === 'invalid-role' ? 'not-an-arn' : 'arn:aws:iam::123456789012:role/migration',
+        '-e', envFile, '-o', path.join(directory, `${scenario}.json`),
+      ], {
+        progress,
+        createReadClient: (backend) => { assert.equal(backend, 'hlx6'); return configs; },
+        createWriteClient: () => { throw new Error('Unexpected write client'); },
+        tokenProvider: () => { throw new Error('Unexpected API token'); },
+      });
+      assert.equal(report.blockers.length, 1);
+      const expected = {
+        'missing-source': /Execution requires a readable source site config/,
+        'invalid-source-id': /Invalid daContentBusId/,
+        'invalid-target-id': /Target is not configured/,
+        'invalid-role': /valid IAM migration role ARN/,
+      };
+      assert.match(report.blockers[0], expected[scenario]);
+      assert.equal(report.results, undefined);
+      assert.ok(configs.calls.every((name) => name === 'GetObjectCommand'));
+    }
+  } finally {
+    for (const key of envKeys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+    await fs.rm(directory, { recursive: true, force: true });
   }
 });
 

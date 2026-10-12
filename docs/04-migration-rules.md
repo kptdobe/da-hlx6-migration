@@ -32,7 +32,7 @@ The migration writes these metadata keys **now**, so no second pass is needed on
 |---|---|---|---|---|---|
 | R1 | `{o}/{s}{p}.html` | `{o}/{s}{toHlx6Path(p)}.html` | rewrite images (R9), gzip | common (§3) | |
 | R2 | `{o}/{s}{p}.json` | idem `.json` | as-is, gzip | common | byte-identical after gunzip |
-| R3 | `{o}/{s}{p}.{gif,ico,jpeg,jpg,mp4,pdf,png,svg}` | idem | raw bytes, uncompressed; do not set `Content-Encoding: gzip` | common | even if the source sample object is gzip-encoded, decode before migration |
+| R3 | `{o}/{s}{p}.{avif,gif,ico,jpeg,jpg,mp4,pdf,png,svg}` | idem | raw bytes, uncompressed; do not set `Content-Encoding: gzip` | common | AVIF uses `image/avif`; even if the source sample object is gzip-encoded, decode before migration |
 | R4 | `{o}/{s}{f}.props` | `{o}/{s}{toHlx6Path(f)}/.props` | `{}`, gzip, `application/json` | common | only where da has a marker; implicit folders stay implicit |
 | R5 | `{o}/{s}/.trash/{name}` | `{o}/{s}/.trash/{name}` (keep the dated name) | per R1-R4 | common + `doc-path` = `/` + `sitePath(path)` | `doc-id` kept from the same da `id`, so its versions stay attached |
 | R6 | `.da-versions/{id}/{vid}.{ext}` | `{o}/{s}/.versions/{docId(id)}/{versionUlid}` (no extension) | preserve raw body; text may be gzip-encoded, binary media remains uncompressed | §4 | |

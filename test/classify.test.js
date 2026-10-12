@@ -69,6 +69,8 @@ describe('isSupportedOnHlx6', () => {
   it('accepts the hlx6 extension list case-insensitively', () => {
     assert.equal(isSupportedOnHlx6('/a/b.HTML'), true);
     assert.equal(isSupportedOnHlx6('/doc.pdf'), true);
+    assert.equal(isSupportedOnHlx6('/images/photo.avif'), true);
+    assert.equal(isSupportedOnHlx6('/images/photo.AVIF'), true);
   });
   it('rejects other extensions', () => {
     assert.equal(isSupportedOnHlx6('/notes.txt'), false);

@@ -7,6 +7,11 @@ const da = (rel, metadata = {}) => ({ rel, ...classifyDa(rel), metadata });
 const check = (result, id) => result.checks.find((c) => c.id === id);
 
 describe('preflight', () => {
+  it('accepts AVIF images case-insensitively', () => {
+    const result = preflight([da('/images/photo.avif'), da('/images/photo.AVIF')]);
+    assert.equal(result.ok, true);
+    assert.equal(check(result, 'unsupported-extensions').count, 0);
+  });
   it('keeps hidden and visible names distinct without rename warnings', () => {
     const entries = [
       da('/.drafts.props'), da('/drafts.props'),

@@ -14,7 +14,7 @@ Everything in this document must be confirmed on real data in Phase 3 (see [03](
 |---|---|---|
 | Document key | `{org}/{site}/{path}.{ext}` | `{org}/{site}/{path}.{ext}` |
 | Case | **Whole path lowercased** (`daCtx.js`: `pathname.toLowerCase()`) | Basename **sanitized** by `sanitizePath()` (helix-shared-string `sanitizeName`: lowercase, non `[a-z0-9]` → `-`). PUT rejects non-sanitized paths with 400 |
-| Allowed extensions | Any | Only `.gif .html .ico .jpeg .jpg .json .mp4 .pdf .png .svg` (`source/utils.js` `CONTENT_TYPES`), otherwise **415** |
+| Allowed extensions | Any | Migration supports `.avif .gif .html .ico .jpeg .jpg .json .mp4 .pdf .png .svg`; AVIF uses `image/avif` and is copied without gzip. Target API support is governed by `source/utils.js` `CONTENT_TYPES`; unsupported types return **415** |
 | Folder marker | Sibling object `{org}/{site}/{folder}.props` | Child object `{org}/{site}/{folder}/.props` (body `{}`, `application/json`) |
 | Hidden / reserved | `.da-versions/`, `*.props`, `.da/` (e.g. `.da/comments/{docId}`) | `.versions/`, `.trash/`, `.props`; `.da/` contents migrate as ordinary files and folders, without exceptions |
 

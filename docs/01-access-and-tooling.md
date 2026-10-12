@@ -40,14 +40,14 @@ The migration never runs with a personal role, which can write anywhere in the a
 
 ```mermaid
 flowchart LR
-  op[operator credentials] -- "AssumeRole + tags\norg, da-site, hlx6-site,\nda-content-bus-id, hlx6-content-bus-id" --> role[da-hlx6-migration role]
+  op[operator credentials] -- "AssumeRole + tags\norg, da-org, da-site, hlx6-site,\nda-content-bus-id, hlx6-content-bus-id" --> role[da-hlx6-migration role]
   role -- "policy variables\n${aws:PrincipalTag/...}" --> s3[(only the folders of this migration)]
 ```
 
 Three independent layers:
-1. **Trust policy** ([infra/aws/trust-policy.json](../infra/aws/trust-policy.json)): the role can only be assumed by the KLAM operator role, with the **exact 5 tags and values for the approved sample migration**. Other sites and media IDs are denied.
+1. **Trust policy** ([infra/aws/trust-policy.json](../infra/aws/trust-policy.json)): the role can only be assumed by the configured KLAM operator role, with all **six migration scope tags**. There is no hardcoded site-pair allowlist; only trusted operators should assume this role.
 2. **Role policy** ([infra/aws/migration-role-policy.json](../infra/aws/migration-role-policy.json)): every resource is built from the tags, and a missing tag is an explicit Deny. Deleting and reconfiguring are always denied.
-3. **Code** (`src/scope.js`): validates the values (`[a-z0-9-]`, hex ids, da ≠ hlx6 media folder) and refuses any write outside the scope before calling AWS.
+3. **Code** (`src/scope.js`): validates both organizations and site names (`[a-z0-9-]`) and both bus IDs (hex). Identical bus IDs are allowed for stable-ID migrations. It refuses any write outside the target source-bus prefix before calling AWS.
 
 ### What one migration session can do
 
@@ -56,10 +56,10 @@ Three independent layers:
 | `helix-source-bus` | `{org}/{hlx6-site}/` (hlx6 site) | yes | yes | yes |
 | `helix-media-bus` | `{da-content-bus-id}/` (da site media) | yes | yes | **no** |
 | `helix-media-bus` | `{hlx6-content-bus-id}/` (hlx6 site media) | yes | yes | **no** (images go through the media API, see [04 §8](04-migration-rules.md#8-images-r9-upload-procedure)) |
-| `helix-config-bus` | `orgs/{org}/sites/{da-site}.json`, `{hlx6-site}.json` | no | yes | **no** |
+| `helix-config-bus` | `orgs/{da-org}/sites/{da-site}.json`, `orgs/{org}/sites/{hlx6-site}.json` | no | yes | **no** |
 | anything else | - | no | no | no |
 
-Example tags for the test: `org=kptdobe`, `da-site=sample-content-da`, `hlx6-site=sample-content-hlx6-migrated`, `da-content-bus-id=cdb7c31a…`, `hlx6-content-bus-id=8a228067…`.
+Example tags for a cross-org migration: `org=kptdobe` (target), `da-org=adobecom` (source), `da-site=da-events`, `hlx6-site=da-events-migrated`, plus both validated live content bus IDs. Same-org migrations still supply both organization tags.
 
 Notes:
 - Writes are `PutObject` on the hlx6 site in the source bus only.
@@ -69,7 +69,7 @@ Notes:
 - The da side (R2) is read-only and does not go through this role (see below).
 
 ### Remaining risk
-The trust policy is intentionally pinned to the three approved sample identifiers for this test. Before reusing the role for another migration, an account admin must review and update the allowed tag values. The tooling also refuses to write into an hlx6 site that contains unrecognized objects.
+The trusted operator can select the source/target scope; this must not become a public or untrusted role. The code validates tag values and the role policy restricts each session to its selected target, but caller authorization remains an administrator responsibility. Before using generic execution, an account admin must deploy the updated trust and role policies (including `da-org`). Local template changes do not update the deployed role. The tooling still refuses to write into a target that contains unrecognized objects.
 
 Not verified yet: whether a `*` inside a substituted tag value acts as a wildcard. The code rejects such values, and the deny checks below test it explicitly.
 

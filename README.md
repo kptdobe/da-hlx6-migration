@@ -36,7 +36,7 @@ to the **hlx6** backend (helix-api-service, AWS S3 "source bus").
 
 3. Run `node bin/migrate.js <source-org/source-site> <target-org/target-site>` and review its dry-run report. Source and target may belong to different organizations. Resolve blockers and target conflicts before execution.
 
-4. Freeze DA edits, then execute with a fresh source snapshot. Keep the freeze in place through verification and cutover. The sample runner requires `--refresh-source -x`; a production runner must likewise migrate the final frozen snapshot.
+4. Freeze DA edits, then execute with a fresh source snapshot using `--refresh-source -x`. Keep the freeze in place through verification and cutover.
 
 5. Dump the migrated HLX6 target and compare it with the DA snapshot. Confirm the expected content, versions, and media before changing the site's source URL.
 
@@ -47,7 +47,7 @@ to the **hlx6** backend (helix-api-service, AWS S3 "source bus").
 
 6. Change `content.source.url` to the HLX6 source and leave `content.fixedContentBusId` set to the recorded DA ID. Verify preview/live content and media, then resume authoring on HLX6. For rollback, restore the DA source URL without removing the fixed ID.
 
-`bin/migrate.js` supports generic read-only dry-runs. Execution remains restricted to the approved sample migration; production writes still require separately reviewed bus IDs and IAM scope. The runner does not provide live delta synchronization or delete source objects.
+`bin/migrate.js` supports dry-runs and execution for arbitrary source and target organizations/sites. Execution resolves and validates both content bus IDs from their live site configs and assumes a migration role scoped to the target. The runner does not provide live delta synchronization or delete source objects.
 
 ## CLI usage
 Credentials and runtime settings are loaded from the local, git-ignored `.dev.vars` file; its non-empty values take precedence over shell variables. It holds the R2 read-only token, AWS profile/role settings, and target media API token. Keep its mode owner-only (`chmod 600 .dev.vars`).
@@ -155,9 +155,19 @@ them blindly against production. Progress includes aggregate object counts,
 completed shards, pages, downloaded bytes, and heartbeats. A dry-run remains a
 point-in-time plan, not an atomic snapshot or authorization to execute.
 
-For backwards compatibility, omitting source/target arguments selects `kptdobe/sample-content-da` to `kptdobe/sample-content-hlx6-migrated`; dry-runs inventory the live sites unless `--source-dump` is selected. Execution automatically performs full validation and only this approved pair can use `-x`; generic and cross-org execution is rejected before loading credentials. Execution additionally requires the dedicated `da-hlx6-migration` AWS role, read-only R2 credentials, and a DA auth token authorized for DA config/image reads and target `media:upload`, `config:read`, and `config:write`. The runner uses `DA_CONFIG_TOKEN` if supplied, otherwise captures the token from `/Users/acapt/work/dev/helix/da/da-auth/src/cli.js token` without printing it. Put the AWS and R2 settings in `.dev.vars`, then run `node bin/migrate.js --refresh-source -x` for the approved sample only. With no site arguments, execution refreshes its existing sample dump. It has no delete path and refuses unplanned target objects.
+For backwards compatibility, omitting source/target arguments selects `kptdobe/sample-content-da` to `kptdobe/sample-content-hlx6-migrated`; this is a default, not an execution allowlist. Dry-runs inventory the live sites unless `--source-dump` is selected. Execution automatically performs full validation and requires `--refresh-source`, valid read-only R2 credentials, readable source/target site configs, and a scoped AWS migration role. Effective bus IDs use `content.fixedContentBusId` when present, otherwise `content.contentBusId`; both are validated before constructing the write scope. Bootstrap config reads use a read-only client with the operator credentials. A missing source config is fatal for execution, while an inventory may report its bus ID as unknown.
 
-To rerun and overwrite all planned sample content, use `node bin/migrate.js --refresh-source --overwrite -x`. Without `-x`, this only plans overwrites. Execution remains pinned to the sample pair, unplanned target objects still block migration, and config conflict protection is unchanged.
+```bash
+node bin/migrate.js --execute --refresh-source source-org/source-site target-org/target-site
+# Optional: select a separately provisioned scoped role
+node bin/migrate.js --execute --refresh-source --role-arn arn:aws:iam::123456789012:role/migration source-org/source-site target-org/target-site
+```
+
+Role selection uses `--role-arn`, then `MIGRATION_ROLE_ARN`, then the shared migration role. The role must trust the operator and accept all six session tags, including `da-org` for the source organization and `org` for the target. **An account administrator must update the deployed trust and role policies from `infra/aws/` before using this version; editing the local templates does not change AWS.** Existing sample-only trust policies will reject generic execution and the new tag. Unsupported content, unplanned target objects, and conflicting project configs still block execution; `--overwrite` only rewrites planned objects. Production source edits must stay frozen through execution and verification.
+
+The DA token must authorize source config/image reads and target `media:upload`, `config:read`, and `config:write`. The runner uses `DA_CONFIG_TOKEN` if supplied, otherwise captures it from `/Users/acapt/work/dev/helix/da/da-auth/src/cli.js token` without printing it. With no site arguments, execution refreshes its existing sample dump. There is no delete path.
+
+To rerun and overwrite all planned sample content, use `node bin/migrate.js --refresh-source --overwrite -x`. For any other pair, also provide the source and target arguments. Without `-x`, `--overwrite` only plans overwrites during full validation. Unplanned target objects still block migration, and config conflict protection is unchanged.
 
 Project config is read from `https://admin.da.live/config/{source-org}/{source-site}` and planned for `editor.da` of the target site's `config.json`. Execution uses a property-only `POST` to `https://api.aem.live/{target-org}/sites/{target-site}/config/editor/da.json`. Top-level properties starting with `:` (including `:properties`) are excluded. Each sheet is replaced by its own `data` array, preserving its name and row values; sheet wrappers (`total`, `limit`, `offset`, `:colWidths`, etc.) are discarded. For example, `{ "data": { "data": [...] }, "alex": { "data": [...] } }` becomes `{ "data": [...], "alex": [...] }` under `editor.da`. Sheets without a data array are rejected. Other target settings are preserved. Missing DA config is skipped; identical target row arrays are resumable; different existing sheet rows are rejected. Previously migrated configs containing metadata or sheet wrappers are converted only when their rows match the source. Dry runs only read and report the planned config migration.
 

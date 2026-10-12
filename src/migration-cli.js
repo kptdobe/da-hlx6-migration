@@ -15,8 +15,6 @@ import { readOnlyClient, readOnlyFetch } from './production-dry-run.js';
 
 const SAMPLE = Object.freeze({
   org: 'kptdobe', daSite: 'sample-content-da', hlx6Site: 'sample-content-hlx6-migrated',
-  daContentBusId: 'cdb7c31a0884cd980ae35142093dbd9e12dd50a3ad8f106e472d50255a8',
-  hlx6ContentBusId: '8a228067304382d0717c282ae08947b512ada27852b0c144dc9ba0afce4',
 });
 const ROLE_ARN = 'arn:aws:iam::118435662149:role/da-hlx6-migration';
 const SAMPLE_DUMP = path.join('analysis', 'da', SAMPLE.org, SAMPLE.daSite);
@@ -25,12 +23,13 @@ const USAGE = `Usage: node bin/migrate.js [options] <source-org/source-site> <ta
 
 Listing-only dry-run by default; no content bodies or headers are fetched.
 Without site arguments, uses the existing sample migration.
-Generic migrations are read-only; execution remains restricted to the approved sample.
+Execution uses a target-scoped migration role for the requested source and target.
 
 Options:
       --dry-run           explicitly select read-only inventory (default)
       --full-validation   download source objects for full migration validation
-  -x, --execute           execute the approved sample only (requires --refresh-source)
+  -x, --execute           execute migration (requires --refresh-source)
+      --role-arn          scoped migration role (default: MIGRATION_ROLE_ARN or shared role)
       --overwrite         plan overwrites; writes still require -x
   -e, --env-file          credentials/config file (default: .dev.vars)
       --source-dump       plan from a local DA dump instead of scanning live
@@ -79,6 +78,7 @@ export async function migrateCli(args, {
       execute: { type: 'boolean', short: 'x' },
       'dry-run': { type: 'boolean' },
       'full-validation': { type: 'boolean' },
+      'role-arn': { type: 'string' },
       overwrite: { type: 'boolean' },
       'env-file': { type: 'string', short: 'e', default: '.dev.vars' },
       'refresh-source': { type: 'boolean' },
@@ -99,11 +99,6 @@ export async function migrateCli(args, {
   const [source = `${SAMPLE.org}/${SAMPLE.daSite}`, target = `${SAMPLE.org}/${SAMPLE.hlx6Site}`] = positionals;
   if (!SITE.test(source) || !SITE.test(target)) throw new Error('Invalid source or target: expected org/site');
   if (values.execute && values['dry-run']) throw new Error('--execute and --dry-run cannot be combined');
-  const approvedSample = source === `${SAMPLE.org}/${SAMPLE.daSite}`
-    && target === `${SAMPLE.org}/${SAMPLE.hlx6Site}`;
-  if (values.execute && !approvedSample) {
-    throw new Error('Execution is restricted to the approved sample; other sites support dry-run only');
-  }
   if (values.execute && !values['refresh-source']) {
     throw new Error('Execution requires --refresh-source so the migration uses a current DA snapshot');
   }
@@ -120,7 +115,7 @@ export async function migrateCli(args, {
   if (!fullValidation && values['source-dump'] && values['refresh-source']) {
     throw new Error('Refreshing a source dump requires --full-validation');
   }
-  const scope = execute ? createScope(SAMPLE) : Object.freeze({
+  let scope = Object.freeze({
     org, daOrg, daSite, hlx6Site, write: Object.freeze([]),
   });
   const sourceDump = values['source-dump'] || (execute && !positionals.length ? SAMPLE_DUMP : undefined);
@@ -147,42 +142,46 @@ export async function migrateCli(args, {
       org: daOrg, repo: daSite, bucket: BACKENDS.da.bucket,
     }, { org, repo: hlx6Site, bucket: BACKENDS.hlx6.bucket });
     applyDevVars(await progress.run('Loading credentials (not logged)', () => fs.readFile(values['env-file'], 'utf8')));
-    if (execute && process.env.MIGRATION_ROLE_ARN && process.env.MIGRATION_ROLE_ARN !== ROLE_ARN) {
-      throw new Error(`Refusing unexpected migration role: ${process.env.MIGRATION_ROLE_ARN}`);
+    const roleArn = values['role-arn'] || process.env.MIGRATION_ROLE_ARN || ROLE_ARN;
+    if (execute && !/^arn:aws:iam::\d{12}:role\/[A-Za-z0-9+=,.@_/-]+$/.test(roleArn)) {
+      throw new Error('Execution requires a valid IAM migration role ARN');
     }
     if (execute && !['S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY', 'S3_DEF_URL'].every((key) => process.env[key])) {
       throw new Error('Execution requires read-only R2 credentials in the selected env file');
     }
-    const hlxClient = execute ? createWriteClient(scope, ROLE_ARN)
-      : readOnlyClient(createReadClient('hlx6', { retryMode: 'adaptive' }));
+    let hlxClient = readOnlyClient(createReadClient('hlx6', { retryMode: 'adaptive' }));
     const targetConfig = await progress.run('Reading target site config', () => getObject(hlxClient,
       'helix-config-bus', `orgs/${org}/sites/${hlx6Site}.json`));
     const config = JSON.parse(targetConfig.body.toString('utf8'));
+    const targetContentBusId = config.content?.fixedContentBusId || config.content?.contentBusId;
     const expectedUrl = `https://api.aem.live/${org}/sites/${hlx6Site}/source`;
     if (config.content?.source?.url !== expectedUrl
-      || !/^[0-9a-f]{32,64}$/.test(config.content?.contentBusId || '')) {
+      || !/^[0-9a-f]{32,64}$/.test(targetContentBusId || '')) {
       throw new Error('Target is not configured as the expected HLX6 site; refusing to plan');
     }
-    if (execute && config.content.contentBusId !== SAMPLE.hlx6ContentBusId) {
-      throw new Error('Target contentBusId changed; refusing to run with stale IAM scope');
-    }
-    report.targetContentBusId = config.content.contentBusId;
+    report.targetContentBusId = targetContentBusId;
     progress.log(`Target: org=${org}; repo=${hlx6Site}; contentBusId=${report.targetContentBusId}; sourceUrl=${expectedUrl}`);
-    if (execute) {
-      report.sourceContentBusId = SAMPLE.daContentBusId;
-    } else {
-      try {
-        const sourceConfig = await progress.run('Reading source site config', () => getObject(hlxClient,
-          'helix-config-bus', `orgs/${daOrg}/sites/${daSite}.json`));
-        const sourceContent = JSON.parse(sourceConfig.body.toString('utf8')).content;
-        report.sourceContentBusId = sourceContent?.fixedContentBusId || sourceContent?.contentBusId;
-      } catch (error) {
-        if (!['NoSuchKey', 'AccessDenied'].includes(error.name)) throw error;
-        report.sourceConfigWarning = `Source content bus ID unavailable: ${error.name}`;
-        progress.log(report.sourceConfigWarning);
-      }
+    try {
+      const sourceConfig = await progress.run('Reading source site config', () => getObject(hlxClient,
+        'helix-config-bus', `orgs/${daOrg}/sites/${daSite}.json`));
+      const sourceContent = JSON.parse(sourceConfig.body.toString('utf8')).content;
+      report.sourceContentBusId = sourceContent?.fixedContentBusId || sourceContent?.contentBusId;
+    } catch (error) {
+      if (execute) throw new Error(`Execution requires a readable source site config: ${error.message}`, { cause: error });
+      if (!['NoSuchKey', 'AccessDenied'].includes(error.name)) throw error;
+      report.sourceConfigWarning = `Source content bus ID unavailable: ${error.name}`;
+      progress.log(report.sourceConfigWarning);
     }
     progress.log(`Source: org=${daOrg}; repo=${daSite}; contentBusId=${report.sourceContentBusId || 'unknown (not accessible)'}`);
+    if (execute) {
+      scope = createScope({
+        org, daOrg, daSite, hlx6Site,
+        daContentBusId: report.sourceContentBusId, hlx6ContentBusId: report.targetContentBusId,
+      });
+      report.roleArn = roleArn;
+      hlxClient = createWriteClient(scope, roleArn);
+      progress.log(`Execution scope: source=${source}; target=${target}; role=${roleArn}; content writes=${scope.write[0].prefix}`);
+    }
     let entries;
     if (values['refresh-source'] || !sourceDump) {
       const daClient = readOnlyClient(createReadClient('da', {

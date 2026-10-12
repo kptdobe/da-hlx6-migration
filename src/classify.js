@@ -1,7 +1,6 @@
 import { splitExt } from './paths.js';
 
-// Extensions accepted by the hlx6 source API (helix-api-service src/source/utils.js).
-export const HLX6_EXTENSIONS = ['.gif', '.html', '.ico', '.jpeg', '.jpg', '.json', '.mp4', '.pdf', '.png', '.svg'];
+export const HLX6_EXTENSIONS = ['.avif', '.gif', '.html', '.ico', '.jpeg', '.jpg', '.json', '.mp4', '.pdf', '.png', '.svg'];
 
 function byExtension(path) {
   const { ext } = splitExt(path.split('/').pop());
