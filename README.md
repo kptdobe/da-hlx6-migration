@@ -131,8 +131,12 @@ spaces, accents, percent escapes, dots, underscores, and punctuation. There is n
 normalization or URL decoding. `renamed-paths` remains in the report for
 compatibility with count zero. Required backend layouts still apply: folder
 markers such as `.drafts.props` become `.drafts/.props`, versions use `.versions/`,
-and trash keeps its namespace. Unsupported extensions and sidecar exclusions
-are unchanged. Unusual names still require separate target read/authoring API
+and trash keeps its namespace. Unsupported files and paths are warnings, not
+blockers: they are listed in `unsupported-extensions`, excluded from migration,
+and logged individually as `SKIPPED`. Full-validation/execution reports also
+include every source key in `excluded` with `reason: unsupported-extension`.
+This covers current content, trash, and version snapshots; supported objects
+continue migrating. File property sidecars remain excluded. Unusual names still require separate target read/authoring API
 compatibility validation. Previously renamed target objects are not automatically
 renamed or deleted; unplanned-object protection remains in force.
 
@@ -163,7 +167,7 @@ node bin/migrate.js --execute --refresh-source source-org/source-site target-org
 node bin/migrate.js --execute --refresh-source --role-arn arn:aws:iam::123456789012:role/migration source-org/source-site target-org/target-site
 ```
 
-Role selection uses `--role-arn`, then `MIGRATION_ROLE_ARN`, then the shared migration role. The role must trust the operator and accept all six session tags, including `da-org` for the source organization and `org` for the target. **An account administrator must update the deployed trust and role policies from `infra/aws/` before using this version; editing the local templates does not change AWS.** Existing sample-only trust policies will reject generic execution and the new tag. Unsupported content, unplanned target objects, and conflicting project configs still block execution; `--overwrite` only rewrites planned objects. Production source edits must stay frozen through execution and verification.
+Role selection uses `--role-arn`, then `MIGRATION_ROLE_ARN`, then the shared migration role. The role must trust the operator and accept all six session tags, including `da-org` for the source organization and `org` for the target. **An account administrator must update the deployed trust and role policies from `infra/aws/` before using this version; editing the local templates does not change AWS.** Existing sample-only trust policies will reject generic execution and the new tag. Unsupported content is reported and skipped; duplicate target paths, unplanned target objects, and conflicting project configs still block execution. `--overwrite` only rewrites planned objects. Production source edits must stay frozen through execution and verification.
 
 The DA token must authorize source config/image reads and target `media:upload`, `config:read`, and `config:write`. The runner uses `DA_CONFIG_TOKEN` if supplied, otherwise captures it from `/Users/acapt/work/dev/helix/da/da-auth/src/cli.js token` without printing it. With no site arguments, execution refreshes its existing sample dump. There is no delete path.
 

@@ -34,6 +34,29 @@ describe('parseAudit', () => {
 });
 
 describe('buildMigrationPlan', () => {
+  it('skips unsupported current, trash and version objects while reporting every source key', () => {
+    const plan = buildMigrationPlan([
+      entry('/index.html', '<main>event</main>'), entry('/folder.props', '{}'),
+      entry('/notes.txt', 'notes'), entry('/links/site.link', 'link'),
+      entry('/no-extension', 'unknown'), entry('/.trash/old.xml', 'xml'),
+      entry('/.da-versions/id/v1.txt', 'old notes'),
+    ], scope);
+    assert.deepEqual(plan.objects.map(({ key }) => key).sort(), [
+      'kptdobe/sample-content-hlx6-migrated/index.html',
+      'kptdobe/sample-content-hlx6-migrated/folder/.props',
+    ].sort());
+    assert.deepEqual(plan.excluded.filter(({ reason }) => reason === 'unsupported-extension'), [
+      { key: 'kptdobe/sample-content-da/notes.txt', kind: 'media', reason: 'unsupported-extension' },
+      { key: 'kptdobe/sample-content-da/links/site.link', kind: 'media', reason: 'unsupported-extension' },
+      { key: 'kptdobe/sample-content-da/no-extension', kind: 'media', reason: 'unsupported-extension' },
+      { key: 'kptdobe/sample-content-da/.trash/old.xml', kind: 'trash', reason: 'unsupported-extension' },
+      { key: 'kptdobe/sample-content-da/.da-versions/id/v1.txt', kind: 'version', reason: 'unsupported-extension' },
+    ]);
+    const warning = plan.warnings.find(({ id }) => id === 'unsupported-extensions');
+    assert.equal(warning.severity, 'warning');
+    assert.equal(warning.count, 5);
+    assert.ok(plan.objects.every(({ contentType }) => contentType));
+  });
   it('preserves AVIF bytes and uses image/avif without gzip for current, trash and version objects', () => {
     const body = Buffer.from([0, 255, 128, 42]);
     const plan = buildMigrationPlan([

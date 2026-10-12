@@ -52,9 +52,10 @@ describe('preflight', () => {
     assert.equal(check(result, 'unmapped-objects').count, 0);
   });
 
-  it('blocks files with extensions hlx6 does not accept', () => {
+  it('lists unsupported files as warnings without blocking', () => {
     const result = preflight([da('/notes.txt', { id: 'U1' }), da('/feed.xml', { id: 'U2' })]);
-    assert.equal(result.ok, false);
+    assert.equal(result.ok, true);
+    assert.equal(check(result, 'unsupported-extensions').severity, 'warning');
     assert.deepEqual(check(result, 'unsupported-extensions').items, ['/notes.txt', '/feed.xml']);
   });
 
@@ -116,7 +117,19 @@ describe('preflight', () => {
 
   it('applies normal extension checks to .da files', () => {
     const result = preflight([da('/.da/notes.txt'), da('/.da/anotherfile.json')]);
-    assert.equal(result.ok, false);
+    assert.equal(result.ok, true);
     assert.deepEqual(check(result, 'unsupported-extensions').items, ['/.da/notes.txt']);
+  });
+
+  it('lists unsupported current, trash and version paths without blocking skipped objects', () => {
+    const result = preflight([
+      da('/index.html'), da('/no-extension'), da('/no-extension'),
+      da('/links/site.link'), da('/.trash/old.xml'), da('/.da-versions/id/v1.txt'),
+    ]);
+    assert.equal(result.ok, true);
+    assert.equal(check(result, 'path-collisions').count, 0);
+    assert.deepEqual(check(result, 'unsupported-extensions').items, [
+      '/no-extension', '/no-extension', '/links/site.link', '/.trash/old.xml', '/.da-versions/id/v1.txt',
+    ]);
   });
 });

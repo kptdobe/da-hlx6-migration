@@ -26,6 +26,7 @@ it('executes cross-org migrations with resolved bus IDs and target-only writes',
   await fs.writeFile(envFile, 'S3_ACCESS_KEY_ID=test\nS3_SECRET_ACCESS_KEY=test\nS3_DEF_URL=https://example.com\n');
   const da = fakeClient({
     'source-org/source-site/My Page.html': { body: '<main>event</main>', metadata: { id: 'source-document' } },
+    'source-org/source-site/unsupported.link': { body: 'linkdata' },
   });
   const configs = fakeClient({
     'orgs/source-org/sites/source-site.json': { body: JSON.stringify({ content: {
@@ -39,7 +40,8 @@ it('executes cross-org migrations with resolved bus IDs and target-only writes',
   const writes = [];
   const apiCalls = [];
   let scopedClientCreated = false;
-  const progress = { summary() {}, log() {}, onProgress() {}, close() {}, async run(label, operation) { return operation(); } };
+  const messages = [];
+  const progress = { summary() {}, log(message) { messages.push(message); }, onProgress() {}, close() {}, async run(label, operation) { return operation(); } };
   try {
     const report = await migrateCli([
       'source-org/source-site', 'target-org/target-site', '-x', '--refresh-source', '--role-arn', roleArn,
@@ -84,6 +86,11 @@ it('executes cross-org migrations with resolved bus IDs and target-only writes',
     assert.equal(report.dryRun, false);
     assert.equal(report.objects, 1);
     assert.deepEqual(report.results, [{ key: 'target-org/target-site/My Page.html', status: 'written', kind: 'doc' }]);
+    assert.deepEqual(report.excluded, [{
+      key: 'source-org/source-site/unsupported.link', kind: 'media', reason: 'unsupported-extension',
+    }]);
+    assert.equal(report.warnings.find(({ id }) => id === 'unsupported-extensions').count, 1);
+    assert.ok(messages.includes('SKIPPED unsupported-extension: source-org/source-site/unsupported.link'));
     assert.deepEqual(writes, ['target-org/target-site/My Page.html']);
     assert.equal(report.projectConfig.status, 'written');
     assert.deepEqual(apiCalls.map(({ method }) => method), ['GET', 'GET', 'GET', 'GET', 'POST']);

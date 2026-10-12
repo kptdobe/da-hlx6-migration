@@ -41,7 +41,7 @@ The migration writes these metadata keys **now**, so no second pass is needed on
 | R9 | `<img src>`, `<source srcset>` in html | - | rewrite to **relative** `./media_{hash}.{ext}` after uploading the image to the hlx6 site's media bus with the **media API** (see §8) | - | covers previewed and never-previewed pages the same way |
 | R10 | `.da/**` | ordinary path mapping under `{o}/{s}/.da/` | per R1-R4 | common | no folder-specific exception or exclusion |
 | R11 | `.da/comments/**` | ordinary path mapping per R10 | JSON per R2 | common | data copied; no comment-ID reattachment or comment UI support |
-| R12 | unsupported extensions, `*.ext.props` sidecars | not migrated | - | - | pre-flight blocking / warning, independent of folder name |
+| R12 | unsupported extensions, `*.ext.props` sidecars | not migrated | - | - | warning, independent of folder name; unsupported objects are listed with an exclusion reason and never written |
 
 ## 3. Common metadata (current and trashed objects)
 
@@ -81,7 +81,7 @@ Implemented in `bin/preflight.js`.
 
 | Check | Severity |
 |---|---|
-| Unsupported extensions | blocking |
+| Unsupported files and paths (current content, trash, versions) | warning; listed and skipped, supported content proceeds |
 | Actual duplicate target paths | blocking |
 | Filename renames | not performed; compatibility report field has count zero |
 | Version folders without a live or trashed doc (migrated as orphans, R7) | warning |

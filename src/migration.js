@@ -216,14 +216,16 @@ export function buildMigrationPlan(entries, scope) {
     .forEach((entry) => objects.push(makeVersionPlan(entry, scope, auditIndex, docIdByDaId)));
 
   const unsupported = objects.filter((object) => object.contentType === undefined);
-  if (unsupported.length) {
-    throw new Error(`Unsupported content types: ${unsupported.map((object) => object.sourceKey).join(', ')}`);
-  }
   return {
     scope: { org: scope.org, daSite: scope.daSite, hlx6Site: scope.hlx6Site },
-    objects,
-    excluded: entries.filter((entry) => ['audit', 'props-sidecar'].includes(entry.kind))
-      .map((entry) => ({ key: entry.key, kind: entry.kind })),
+    objects: objects.filter((object) => object.contentType !== undefined),
+    excluded: [
+      ...entries.filter((entry) => ['audit', 'props-sidecar'].includes(entry.kind))
+        .map((entry) => ({ key: entry.key, kind: entry.kind })),
+      ...unsupported.map((object) => ({
+        key: object.sourceKey, kind: object.kind, reason: 'unsupported-extension',
+      })),
+    ],
     warnings: checks.checks.filter((check) => check.severity === 'warning' && check.count),
   };
 }

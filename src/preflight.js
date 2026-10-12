@@ -11,12 +11,14 @@ const CURRENT_KINDS = ['doc', 'sheet', 'media', 'folder'];
 export function preflight(entries) {
   const current = entries.filter((e) => CURRENT_KINDS.includes(e.kind));
 
-  const unsupported = current
-    .filter((e) => e.kind !== 'folder' && !isSupportedOnHlx6(e.path))
-    .map((e) => e.path);
+  const unsupported = entries
+    .filter((e) => ['doc', 'sheet', 'media', 'trash', 'version'].includes(e.kind)
+      && !(e.kind === 'trash' && e.trashedKind === 'folder')
+      && !isSupportedOnHlx6(e.rel || e.path || e.key || ''))
+    .map((e) => e.rel || e.path || e.key);
 
   const byHlx6Key = new Map();
-  current.forEach((e) => {
+  current.filter((e) => e.kind === 'folder' || isSupportedOnHlx6(e.path)).forEach((e) => {
     const hlx6Key = `${e.kind === 'folder' ? 'folder' : 'file'}:${toHlx6Path(e.path)}`;
     if (!byHlx6Key.has(hlx6Key)) byHlx6Key.set(hlx6Key, []);
     byHlx6Key.get(hlx6Key).push(e.path);
@@ -37,7 +39,7 @@ export function preflight(entries) {
 
   const checks = [
     {
-      id: 'unsupported-extensions', severity: 'blocking', description: 'Files with extensions hlx6 does not accept', count: unsupported.length, items: unsupported,
+      id: 'unsupported-extensions', severity: 'warning', description: 'Unsupported files and paths are skipped during migration', count: unsupported.length, items: unsupported,
     },
     {
       id: 'path-collisions', severity: 'blocking', description: 'Several da paths map to the same hlx6 path', count: collisions.length, items: collisions,

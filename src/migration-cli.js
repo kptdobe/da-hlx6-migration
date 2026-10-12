@@ -243,6 +243,9 @@ export async function migrateCli(args, {
       report.warnings = report.preflight.checks.filter((check) => check.severity === 'warning' && check.count);
       progress.log(`Source inventory: ${report.sourceObjects} objects; ${report.sourceBytes} stored bytes`);
       progress.log(`Target inventory: ${report.targetObjects} objects; ${report.targetBytes} stored bytes`);
+      for (const path of report.preflight.checks.find(({ id }) => id === 'unsupported-extensions').items) {
+        progress.log(`SKIPPED unsupported-extension: ${source}${path}`);
+      }
       for (const { id, reason } of report.skippedChecks) progress.log(`SKIPPED ${id}: ${reason}`);
       if (!report.preflight.ok) throw new Error('Source path checks have blockers; see inventory report');
       return report;
@@ -254,6 +257,9 @@ export async function migrateCli(args, {
     report.warnings = plan.warnings;
     report.plannedObjects = plan.objects.map(({ key, sourceKey, kind }) => ({ key, sourceKey, kind }));
     progress.log(`Plan: ${plan.objects.length} objects; ${plan.excluded.length} excluded; ${plan.warnings.length} warnings`);
+    for (const { key, reason } of plan.excluded.filter((entry) => entry.reason === 'unsupported-extension')) {
+      progress.log(`SKIPPED ${reason}: ${key}`);
+    }
     const apiToken = await progress.run('Obtaining DA auth token (not logged)', tokenProvider);
     const configOptions = {
       scope, daConfigToken: apiToken, configToken: apiToken, onProgress: progress.onProgress,
