@@ -61,20 +61,18 @@ describe('inspectDestination', () => {
     const result = await inspectDestination(client, scope, [object]);
     assert.equal(result.get(object.key), 'exists');
   });
-  it('uses the source hash marker to resume an identical prior migration object', async () => {
+  it('requires overwrite even for an identical prior migration object during execution', async () => {
     const client = fakeClient([object.key], {
       [object.key]: { 'da-id': 'doc-id', 'da-source-sha256': sourceHash },
     });
-    const result = await runMigration({ objects: [object] }, {
+    await assert.rejects(runMigration({ objects: [object] }, {
       client,
       scope: {
         ...scope,
         write: [{ bucket: 'helix-source-bus', prefix: 'kptdobe/sample-content-hlx6-migrated/' }],
       },
       execute: true,
-    });
-    assert.equal(result.statuses.get(object.key), 'exists');
-    assert.equal(result.results.length, 0);
+    }), /execution requires --overwrite/);
     assert.equal(client.writes.length, 0);
   });
   it('refuses an existing object not owned by this migration', async () => {

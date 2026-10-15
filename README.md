@@ -25,7 +25,7 @@ to the **hlx6** backend (helix-api-service, AWS S3 "source bus").
 
 `content.fixedContentBusId` keeps the existing content and media bus when the site's content source changes from DA to HLX6. The property is owned by config-storage, not this migration tool; wait until the [config-storage support](https://github.com/adobe/helix-config-storage/pull/326) is deployed before using it.
 
-1. Record the DA site's current effective `contentBusId`. After config-storage support is deployed, set `content.fixedContentBusId` to that value in the site config that will be switched, while its source URL still points to DA. Use the same ID for both the DA and HLX6 migration scopes so media is read from and written to the same bus.
+1. Record the DA site's current `contentBusId`. Set `content.fixedContentBusId` to `true` in the site config that will be switched, while its source URL still points to DA. When the source has this flag, the migration uses its `contentBusId` for both the DA and HLX6 scopes so media is read from and written to the same bus.
 2. Check blockers and inspect the source and target state. Keep DA authoring active for this read-only preparation.
 
 	```bash
@@ -45,7 +45,7 @@ to the **hlx6** backend (helix-api-service, AWS S3 "source bus").
 	node bin/compare.js analysis/da/<org>/<da-site> analysis/hlx6/<org>/<hlx6-site>
 	```
 
-6. Change `content.source.url` to the HLX6 source and leave `content.fixedContentBusId` set to the recorded DA ID. Verify preview/live content and media, then resume authoring on HLX6. For rollback, restore the DA source URL without removing the fixed ID.
+6. Change `content.source.url` to the HLX6 source and leave `content.fixedContentBusId` set to `true`. Verify preview/live content and media, then resume authoring on HLX6. For rollback, restore the DA source URL without removing the flag.
 
 `bin/migrate.js` supports dry-runs and execution for arbitrary source and target organizations/sites. Execution resolves and validates both content bus IDs from their live site configs and assumes a migration role scoped to the target. The runner does not provide live delta synchronization or delete source objects.
 
@@ -87,7 +87,17 @@ node bin/migrate.js --dry-run adobecom/da-events kptdobe/da-events-migrated
 Dry-run is the default; `--dry-run` is optional and cannot be combined with `-x`.
 It uses listings only for site content: no per-file HEAD or GET requests, no source
 body downloads, and no DA token or project-config API requests. Small site configs
-are still read to validate the target and resolve summary bus IDs. Reports include
+are still read to resolve summary bus IDs. The target's source URL does not gate
+inventory, full validation, or execution; it can still point to DA before cutover.
+Missing or invalid target bus IDs are marked unknown in dry-runs; execution still
+requires valid effective source and target bus IDs for the scoped role and media.
+Any object under `helix-source-bus/<target-org>/<target-site>/` means the target
+exists, regardless of config or content bus ID. Dry-runs log and report a
+`target-exists` warning. Execution blocks before source downloads or assuming a
+write role unless `--overwrite` is supplied, even for identical prior migration
+objects. The runner checks again before uploads/writes. `--overwrite` permits
+planned overwrites only; unplanned objects and project-config conflicts still
+block. Reports include
 each source and target key's stored byte size, object counts, and total stored bytes.
 `sourceSummary` and `targetSummary` separately report current content (documents,
 sheets, media, and folder markers), version history (`.da-versions/` on DA and
@@ -130,8 +140,8 @@ part of this source snapshot.
 The planner still consumes buffers in memory. Persistence adds inspection and
 reuse, not a streaming or reduced-memory implementation; the previous memory-only
 behavior was an implementation choice, not a measured performance optimization.
-The target must already have the expected HLX6 source URL and a valid content bus
-ID. Source and target summaries print resolved bus IDs before scanning; an
+The target does not need an HLX6 source URL before migration. Execution requires
+a valid content bus ID. Source and target summaries print resolved bus IDs before scanning; an
 inaccessible source config is explicitly reported as unknown. Use a local source
 dump instead of a live scan with (inventory reads only its manifest, not body files):
 
@@ -202,7 +212,7 @@ them blindly against production. Progress includes aggregate object counts,
 completed shards, pages, downloaded bytes, and heartbeats. A dry-run remains a
 point-in-time plan, not an atomic snapshot or authorization to execute.
 
-For backwards compatibility, omitting source/target arguments selects `kptdobe/sample-content-da` to `kptdobe/sample-content-hlx6-migrated`; this is a default, not an execution allowlist. Dry-runs inventory the live sites unless `--source-dump` is selected. Execution automatically performs full validation and requires `--refresh-source`, valid read-only R2 credentials, readable source/target site configs, and a scoped AWS migration role. Effective bus IDs use `content.fixedContentBusId` when present, otherwise `content.contentBusId`; both are validated before constructing the write scope. Bootstrap config reads use a read-only client with the operator credentials. A missing source config is fatal for execution, while an inventory may report its bus ID as unknown.
+For backwards compatibility, omitting source/target arguments selects `kptdobe/sample-content-da` to `kptdobe/sample-content-hlx6-migrated`; this is a default, not an execution allowlist. Dry-runs inventory the live sites unless `--source-dump` is selected. Execution automatically performs full validation and requires `--refresh-source`, valid read-only R2 credentials, readable source/target site configs, and a scoped AWS migration role. When the source has `content.fixedContentBusId: true`, its `content.contentBusId` is used for both migration scopes. Otherwise each site's bus ID is resolved separately; legacy nonempty string-valued fixed IDs remain supported. Both IDs are validated before constructing the write scope. Bootstrap config reads use a read-only client with the operator credentials. A missing source config is fatal for execution, while an inventory may report its bus ID as unknown.
 
 ```bash
 node bin/migrate.js --execute --refresh-source source-org/source-site target-org/target-site

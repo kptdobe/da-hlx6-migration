@@ -30,7 +30,7 @@ Options:
       --full-validation   download source objects for full migration validation
   -x, --execute           execute migration (requires --refresh-source)
       --role-arn          scoped migration role (default: MIGRATION_ROLE_ARN or shared role)
-      --overwrite         plan overwrites; writes still require -x
+      --overwrite         allow writes to a nonempty target; writes still require -x
   -e, --env-file          credentials/config file (default: .dev.vars)
       --source-dump       plan from a local DA dump instead of scanning live
       --refresh-source    scan live; refresh --source-dump if provided
@@ -60,6 +60,11 @@ function summarizeInventory(entries, site, backend) {
     summary[category].bytes += entry.size;
   }
   return summary;
+}
+
+function configuredContentBusId(content) {
+  return typeof content?.fixedContentBusId === 'string' && content.fixedContentBusId
+    ? content.fixedContentBusId : content?.contentBusId;
 }
 
 export async function migrateCli(args, {
@@ -128,7 +133,7 @@ export async function migrateCli(args, {
   const report = {
     source, target, dryRun: !execute, overwrite: Boolean(values.overwrite), startedAt,
     validation: fullValidation ? 'full' : 'inventory',
-    concurrency, listingConcurrency, retryMode: 'adaptive', blockers: [],
+    concurrency, listingConcurrency, retryMode: 'adaptive', blockers: [], warnings: [],
     ...(!fullValidation && { skippedChecks: [
       { id: 'orphan-versions', reason: 'Requires source object identity metadata; inventory does not fetch headers' },
       { id: 'migration-plan', reason: 'Requires document metadata and audit/version bodies; use --full-validation' },
@@ -153,26 +158,46 @@ export async function migrateCli(args, {
     const targetConfig = await progress.run('Reading target site config', () => getObject(hlxClient,
       'helix-config-bus', `orgs/${org}/sites/${hlx6Site}.json`));
     const config = JSON.parse(targetConfig.body.toString('utf8'));
-    const targetContentBusId = config.content?.fixedContentBusId || config.content?.contentBusId;
-    const expectedUrl = `https://api.aem.live/${org}/sites/${hlx6Site}/source`;
-    if (config.content?.source?.url !== expectedUrl
-      || !/^[0-9a-f]{32,64}$/.test(targetContentBusId || '')) {
-      throw new Error('Target is not configured as the expected HLX6 site; refusing to plan');
-    }
-    report.targetContentBusId = targetContentBusId;
-    progress.log(`Target: org=${org}; repo=${hlx6Site}; contentBusId=${report.targetContentBusId}; sourceUrl=${expectedUrl}`);
+    let targetContentBusId = configuredContentBusId(config.content);
     try {
       const sourceConfig = await progress.run('Reading source site config', () => getObject(hlxClient,
         'helix-config-bus', `orgs/${daOrg}/sites/${daSite}.json`));
       const sourceContent = JSON.parse(sourceConfig.body.toString('utf8')).content;
-      report.sourceContentBusId = sourceContent?.fixedContentBusId || sourceContent?.contentBusId;
+      report.sourceContentBusId = configuredContentBusId(sourceContent);
+      if (sourceContent?.fixedContentBusId === true) {
+        targetContentBusId = report.sourceContentBusId;
+        progress.log('Source fixedContentBusId=true: using source contentBusId for the target migration scope');
+      }
     } catch (error) {
       if (execute) throw new Error(`Execution requires a readable source site config: ${error.message}`, { cause: error });
       if (!['NoSuchKey', 'AccessDenied'].includes(error.name)) throw error;
       report.sourceConfigWarning = `Source content bus ID unavailable: ${error.name}`;
       progress.log(report.sourceConfigWarning);
     }
+    const validTargetContentBusId = typeof targetContentBusId === 'string'
+      && /^[0-9a-f]{32,64}$/.test(targetContentBusId);
+    if (execute && !validTargetContentBusId) throw new Error('Execution requires a valid target content bus ID');
+    if (validTargetContentBusId) report.targetContentBusId = targetContentBusId;
+    progress.log(`Target: org=${org}; repo=${hlx6Site}; contentBusId=${report.targetContentBusId || 'unknown (missing or invalid)'}; sourceUrl=${config.content?.source?.url || 'unknown (not configured)'}`);
     progress.log(`Source: org=${daOrg}; repo=${daSite}; contentBusId=${report.sourceContentBusId || 'unknown (not accessible)'}`);
+    const targetEntries = await listSharded(hlxClient, BACKENDS.hlx6.bucket, `${target}/`, {
+      concurrency: listingConcurrency, onProgress: progress.onProgress,
+    });
+    report.targetObjects = targetEntries.length;
+    report.targetBytes = targetEntries.reduce((total, entry) => total + entry.size, 0);
+    report.targetSummary = summarizeInventory(targetEntries, target, 'hlx6');
+    for (const [category, { objects, bytes }] of Object.entries(report.targetSummary)) {
+      progress.log(`Target ${category}: ${objects} objects; ${bytes} stored bytes`);
+    }
+    if (targetEntries.length) {
+      const description = `HLX6 target contains objects under ${BACKENDS.hlx6.bucket}/${target}/; execution requires --overwrite`;
+      report.warnings.push({
+        id: 'target-exists', severity: 'warning', description, count: targetEntries.length,
+        items: targetEntries.map(({ key }) => key),
+      });
+      progress.log(`Warning: ${description}`);
+      if (execute && !values.overwrite) throw new Error(description);
+    }
     if (execute) {
       scope = createScope({
         org, daOrg, daSite, hlx6Site,
@@ -232,20 +257,11 @@ export async function migrateCli(args, {
         const rel = `/${key.slice(source.length + 1)}`;
         return { key, size, etag, lastModified, rel, ...classifyDa(rel) };
       });
-      const targetEntries = await listSharded(hlxClient, BACKENDS.hlx6.bucket, `${target}/`, {
-        concurrency: listingConcurrency, onProgress: progress.onProgress,
-      });
-      report.targetObjects = targetEntries.length;
-      report.targetBytes = targetEntries.reduce((total, entry) => total + entry.size, 0);
-      report.targetSummary = summarizeInventory(targetEntries, target, 'hlx6');
-      for (const [category, { objects, bytes }] of Object.entries(report.targetSummary)) {
-        progress.log(`Target ${category}: ${objects} objects; ${bytes} stored bytes`);
-      }
       report.inventory = { source: entries, target: targetEntries, sizeUnit: 'stored bytes' };
       report.preflight = await progress.run('Checking listing-based paths only', () => preflight(entries));
       report.preflight.scope = 'paths-only';
       report.preflight.checks = report.preflight.checks.filter(({ id }) => id !== 'orphan-versions');
-      report.warnings = report.preflight.checks.filter((check) => check.severity === 'warning' && check.count);
+      report.warnings.push(...report.preflight.checks.filter((check) => check.severity === 'warning' && check.count));
       progress.log(`Source inventory: ${report.sourceObjects} objects; ${report.sourceBytes} stored bytes`);
       progress.log(`Target inventory: ${report.targetObjects} objects; ${report.targetBytes} stored bytes`);
       for (const path of report.preflight.checks.find(({ id }) => id === 'unsupported-extensions').items) {
@@ -259,7 +275,7 @@ export async function migrateCli(args, {
     if (!report.preflight.ok) throw new Error('Source preflight has blocking checks; see report');
     const plan = await progress.run('Building migration plan', () => buildMigrationPlan(entries, scope));
     report.excluded = plan.excluded;
-    report.warnings = plan.warnings;
+    report.warnings.push(...plan.warnings);
     report.plannedObjects = plan.objects.map(({ key, sourceKey, kind }) => ({ key, sourceKey, kind }));
     progress.log(`Plan: ${plan.objects.length} objects; ${plan.excluded.length} excluded; ${plan.warnings.length} warnings`);
     for (const { key, reason } of plan.excluded.filter((entry) => entry.reason === 'unsupported-extension')) {

@@ -27,10 +27,13 @@ function belongsToMigration(head, object) {
 }
 
 export async function inspectDestination(client, scope, objects, {
-  overwrite = false, onProgress = () => {},
+  overwrite = false, requireEmpty = false, onProgress = () => {},
 } = {}) {
   const prefix = `${scope.org}/${scope.hlx6Site}/`;
   const existing = await listAll(client, SOURCE_BUCKET, prefix, { onProgress });
+  if (requireEmpty && existing.length && !overwrite) {
+    throw new Error(`HLX6 target contains objects under ${SOURCE_BUCKET}/${prefix}; execution requires --overwrite`);
+  }
   const planKeys = new Set(objects.map((object) => object.key));
   const unexpected = existing.filter((object) => !planKeys.has(object.key));
   if (unexpected.length) {
@@ -134,7 +137,7 @@ export async function runMigration(plan, {
   onImageError = () => {},
   onImageUploaded = () => {},
 }) {
-  const statuses = await inspectDestination(client, scope, plan.objects, { overwrite, onProgress });
+  const statuses = await inspectDestination(client, scope, plan.objects, { overwrite, requireEmpty: execute, onProgress });
   if (!execute) {
     onProgress({ phase: 'Collecting image upload candidates (dry run; no uploads)' });
     return {

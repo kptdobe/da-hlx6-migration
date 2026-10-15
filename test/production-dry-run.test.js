@@ -34,7 +34,7 @@ it('executes cross-org migrations with resolved bus IDs and target-only writes',
     } }) },
     'orgs/target-org/sites/target-site.json': { body: JSON.stringify({ content: {
       contentBusId: 'd'.repeat(59), fixedContentBusId: 'b'.repeat(59),
-      source: { url: 'https://api.aem.live/target-org/sites/target-site/source' },
+      source: { url: 'https://content.da.live/target-org/target-site' },
     } }) },
   });
   const writes = [];
@@ -60,7 +60,8 @@ it('executes cross-org migrations with resolved bus IDs and target-only writes',
         assert.equal(scope.daContentBusId, 'a'.repeat(59));
         assert.equal(scope.hlx6ContentBusId, 'b'.repeat(59));
         assert.deepEqual(scope.write, [{ bucket: 'helix-source-bus', prefix: 'target-org/target-site/' }]);
-        assert.deepEqual(configs.calls, ['GetObjectCommand', 'GetObjectCommand']);
+        assert.deepEqual(configs.calls.slice(0, 2), ['GetObjectCommand', 'GetObjectCommand']);
+        assert.ok(configs.calls.slice(2).every((name) => name === 'ListObjectsV2Command'));
         return {
           async send(command) {
             assert.equal(command.input.Bucket, 'helix-source-bus');
@@ -120,6 +121,61 @@ it('executes cross-org migrations with resolved bus IDs and target-only writes',
   }
 });
 
+it('uses the source content bus ID for both scopes when its fixed-ID flag is true', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'migration-fixed-bus-'));
+  const envFile = path.join(directory, 'env');
+  const envKeys = ['S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY', 'S3_DEF_URL'];
+  const previous = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+  await fs.writeFile(envFile, 'S3_ACCESS_KEY_ID=test\nS3_SECRET_ACCESS_KEY=test\nS3_DEF_URL=https://example.com\n');
+  const progress = { summary() {}, log() {}, onProgress() {}, close() {}, async run(label, operation) { return operation(); } };
+  try {
+    for (const [scenario, sourceFixed, sourceId, targetId] of [
+      ['target-boolean', true, 'a'.repeat(59), 'b'.repeat(59)],
+      ['missing-target-id', true, 'a'.repeat(59), undefined],
+      ['invalid-source-id', true, '*', 'b'.repeat(59)],
+      ['false-source-flag', false, 'a'.repeat(59), 'b'.repeat(59)],
+    ]) {
+      const configs = fakeClient({
+        'orgs/source-org/sites/source-site.json': { body: JSON.stringify({ content: {
+          fixedContentBusId: sourceFixed, contentBusId: sourceId,
+        } }) },
+        'orgs/target-org/sites/target-site.json': { body: JSON.stringify({ content: {
+          fixedContentBusId: true, contentBusId: targetId,
+        } }) },
+      });
+      let scopedClientCreated = false;
+      const report = await migrateCli([
+        'source-org/source-site', 'target-org/target-site', '-x', '--refresh-source',
+        '-e', envFile, '-o', path.join(directory, `${scenario}.json`),
+      ], {
+        progress,
+        createReadClient: (backend) => { assert.equal(backend, 'hlx6'); return configs; },
+        createWriteClient: (scope) => {
+          scopedClientCreated = true;
+          assert.equal(scope.daContentBusId, sourceId);
+          assert.equal(scope.hlx6ContentBusId, sourceFixed ? sourceId : targetId);
+          throw new Error('Verified migration scope');
+        },
+        tokenProvider: () => { throw new Error('Unexpected API token'); },
+      });
+      assert.equal(scopedClientCreated, scenario !== 'invalid-source-id');
+      assert.deepEqual(report.blockers, [
+        scenario === 'invalid-source-id' ? 'Execution requires a valid target content bus ID' : 'Verified migration scope',
+      ]);
+      if (scopedClientCreated) {
+        assert.equal(report.sourceContentBusId, sourceId);
+        assert.equal(report.targetContentBusId, sourceFixed ? sourceId : targetId);
+      }
+    }
+  } finally {
+    for (const key of envKeys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
 it('blocks invalid execution configs and roles before constructing a write client', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'migration-scope-blockers-'));
   const envFile = path.join(directory, 'env');
@@ -153,12 +209,12 @@ it('blocks invalid execution configs and roles before constructing a write clien
       const expected = {
         'missing-source': /Execution requires a readable source site config/,
         'invalid-source-id': /Invalid daContentBusId/,
-        'invalid-target-id': /Target is not configured/,
+        'invalid-target-id': /valid target content bus ID/,
         'invalid-role': /valid IAM migration role ARN/,
       };
       assert.match(report.blockers[0], expected[scenario]);
       assert.equal(report.results, undefined);
-      assert.ok(configs.calls.every((name) => name === 'GetObjectCommand'));
+      assert.ok(configs.calls.every((name) => ['GetObjectCommand', 'ListObjectsV2Command'].includes(name)));
     }
   } finally {
     for (const key of envKeys) {
@@ -247,6 +303,123 @@ it('rejects malformed scopes and conflicting execution modes before reading cred
     assert.notEqual(result.status, 0);
     assert.doesNotMatch(result.stderr, /ENOENT|credentials|ExpiredToken/);
     assert.equal(result.stdout, '');
+  }
+});
+
+it('requires explicit overwrite for any target-prefix object before downloading or assuming a write role', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'migration-existing-target-'));
+  const envFile = path.join(directory, 'env');
+  const envKeys = ['S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY', 'S3_DEF_URL'];
+  const previous = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+  await fs.writeFile(envFile, 'S3_ACCESS_KEY_ID=test\nS3_SECRET_ACCESS_KEY=test\nS3_DEF_URL=https://example.com\n');
+  const progress = { summary() {}, log() {}, onProgress() {}, close() {}, async run(label, operation) { return operation(); } };
+  const snapshots = [];
+  try {
+    for (const [scenario, key] of [
+      ['doc', 'target-org/target-site/index.html'],
+      ['marker', 'target-org/target-site/'],
+      ['version', 'target-org/target-site/.versions/id/audit.txt'],
+      ['neighbor', 'target-org/target-site-other/index.html'],
+    ]) {
+      for (const overwrite of [false, true]) {
+        const da = fakeClient({
+          'source-org/source-site/index.html': { body: '<main>source</main>', metadata: { id: 'source-id' } },
+        });
+        const configs = fakeClient({
+          'orgs/source-org/sites/source-site.json': { body: JSON.stringify({ content: { contentBusId: 'a'.repeat(59) } }) },
+          'orgs/target-org/sites/target-site.json': { body: JSON.stringify({ content: {
+            contentBusId: 'b'.repeat(59), source: { url: 'https://content.da.live/target-org/target-site' },
+          } }) },
+          [key]: { body: '' },
+        });
+        let writeClientCreated = false;
+        const report = await migrateCli([
+          'source-org/source-site', 'target-org/target-site', '-x', '--refresh-source',
+          ...(overwrite ? ['--overwrite'] : []), '-e', envFile,
+          '-o', path.join(directory, `${scenario}-${overwrite}.json`),
+        ], {
+          progress,
+          createReadClient: (backend) => (backend === 'da' ? da : configs),
+          createWriteClient: () => { writeClientCreated = true; return configs; },
+          tokenProvider: () => { throw new Error('Reached full validation'); },
+        });
+        if (report.sourceDump) snapshots.push(report.sourceDump);
+        const blocked = scenario !== 'neighbor' && !overwrite;
+        assert.equal(writeClientCreated, !blocked);
+        assert.equal(report.targetObjects, scenario === 'neighbor' ? 0 : 1);
+        assert.equal(report.warnings.some(({ id }) => id === 'target-exists'), scenario !== 'neighbor');
+        if (blocked) {
+          assert.match(report.blockers[0], /execution requires --overwrite/);
+          assert.deepEqual(da.calls, []);
+          assert.equal(report.sourceDump, undefined);
+        } else {
+          assert.deepEqual(report.blockers, ['Reached full validation']);
+          assert.ok(da.calls.includes('GetObjectCommand'));
+        }
+        assert.ok(configs.calls.every((name) => ['GetObjectCommand', 'ListObjectsV2Command'].includes(name)));
+      }
+    }
+  } finally {
+    for (const snapshot of snapshots) await fs.rm(snapshot, { recursive: true, force: true });
+    for (const key of envKeys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+it('warns about same-site target objects regardless of source URL or bus ID', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'migration-da-target-'));
+  const envFile = path.join(directory, 'env');
+  const site = 'cat-digital-platform/catdealer';
+  await fs.writeFile(envFile, '');
+  try {
+    for (const [scenario, contentBusId] of [
+      ['valid-id', 'a'.repeat(59)], ['missing-id', undefined], ['invalid-id', '*'],
+    ]) {
+      const messages = [];
+      const progress = { summary() {}, log(message) { messages.push(message); }, onProgress() {}, close() {}, async run(label, operation) { return operation(); } };
+      const da = fakeClient({
+        [`${site}/index.html`]: { body: 'source' },
+        [`${site}/unsupported.link`]: { body: 'link' },
+      });
+      const hlx = fakeClient({
+        'orgs/cat-digital-platform/sites/catdealer.json': { body: JSON.stringify({ content: {
+          contentBusId, source: { url: `https://content.da.live/${site}` },
+        } }) },
+        [`${site}/index.html`]: { body: 'target' },
+      });
+      const dependencies = {
+        progress,
+        createReadClient: (backend) => ({
+          async send(command) {
+            assert.ok(command.constructor.name === 'ListObjectsV2Command'
+              || (command.constructor.name === 'GetObjectCommand' && command.input.Bucket === 'helix-config-bus'));
+            return (backend === 'da' ? da : hlx).send(command);
+          },
+        }),
+        tokenProvider: () => { throw new Error('Unexpected API token'); },
+        createWriteClient: () => { throw new Error('Unexpected write client'); },
+        fetchImpl: () => { throw new Error('Unexpected API request'); },
+      };
+      const out = path.join(directory, `${scenario}.json`);
+      const report = await migrateCli([site, site, '--dry-run', '-e', envFile, '-o', out], dependencies);
+      assert.deepEqual(report.blockers, []);
+      assert.equal(report.sourceObjects, 2);
+      assert.equal(report.targetObjects, 1);
+      assert.equal(report.sourceBytes, 10);
+      assert.equal(report.targetBytes, 6);
+      assert.equal(report.targetContentBusId, scenario === 'valid-id' ? contentBusId : undefined);
+      assert.equal(report.warnings.find(({ id }) => id === 'target-exists').count, 1);
+      assert.equal(report.warnings.find(({ id }) => id === 'unsupported-extensions').count, 1);
+      assert.ok(messages.some((message) => message.startsWith('Warning: HLX6 target contains objects')));
+      assert.ok(messages.some((message) => message.includes(`sourceUrl=https://content.da.live/${site}`)));
+      assert.ok(messages.some((message) => message.includes(`contentBusId=${scenario === 'valid-id' ? contentBusId : 'unknown (missing or invalid)'}`)));
+      assert.deepEqual(JSON.parse(await fs.readFile(out, 'utf8')).warnings, report.warnings);
+    }
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
   }
 });
 
@@ -453,7 +626,7 @@ it('full validation reclassifies legacy .da exclusions in a local source dump', 
   }
 });
 
-it('records target and source-scope blockers without requesting write clients or tokens', async () => {
+it('records source-scope blockers independently of the target source URL', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'migration-blockers-'));
   const envFile = path.join(directory, 'env');
   const dump = path.join(directory, 'dump');
@@ -484,10 +657,9 @@ it('records target and source-scope blockers without requesting write clients or
       });
       assert.equal(report.dryRun, true);
       assert.equal(report.blockers.length, 1);
-      assert.match(report.blockers[0], scenario === 'invalid-target'
-        ? /Target is not configured/ : /outside the requested DA site/);
+      assert.match(report.blockers[0], /outside the requested DA site/);
       assert.deepEqual(JSON.parse(await fs.readFile(out, 'utf8')).blockers, report.blockers);
-      assert.ok(client.calls.every((name) => name === 'GetObjectCommand'));
+      assert.ok(client.calls.every((name) => ['GetObjectCommand', 'ListObjectsV2Command'].includes(name)));
     }
   } finally {
     await fs.rm(directory, { recursive: true, force: true });
