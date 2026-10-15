@@ -5,7 +5,7 @@ import {
   S3Client, ListObjectsV2Command, HeadObjectCommand, GetObjectCommand, PutObjectCommand,
 } from '@aws-sdk/client-s3';
 import { NodeHttpHandler } from '@smithy/node-http-handler';
-import { fromTemporaryCredentials } from '@aws-sdk/credential-providers';
+import { fromNodeProviderChain, fromTemporaryCredentials } from '@aws-sdk/credential-providers';
 import processQueue from '@adobe/helix-shared-process-queue';
 import { assertWritable, sessionTags, sessionName } from './scope.js';
 import { generateShardPrefixes } from './sharding.js';
@@ -36,6 +36,7 @@ export function createMigrationClient(scope, roleArn, region = BACKENDS.hlx6.reg
     maxAttempts: 5,
     requestHandler: httpHandler(),
     credentials: fromTemporaryCredentials({
+      masterCredentials: fromNodeProviderChain({ ignoreCache: true }),
       params: {
         RoleArn: roleArn,
         RoleSessionName: sessionName(scope),
@@ -115,6 +116,7 @@ export function createClient(backend, opts = {}) {
   }
   if (backend === 'hlx6') {
     return new S3Client({
+      credentials: fromNodeProviderChain({ ignoreCache: true }),
       region: opts.region || BACKENDS.hlx6.region,
       retryMode: opts.retryMode || 'standard',
       maxAttempts: 5,

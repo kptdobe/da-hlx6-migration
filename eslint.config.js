@@ -14,4 +14,8 @@ export default [
       'no-console': 'off',
     },
   },
+  {
+    files: ['ui/**/*.js'],
+    languageOptions: { globals: globals.browser },
+  },
 ];

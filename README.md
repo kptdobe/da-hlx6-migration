@@ -49,6 +49,84 @@ to the **hlx6** backend (helix-api-service, AWS S3 "source bus").
 
 `bin/migrate.js` supports dry-runs and execution for arbitrary source and target organizations/sites. Execution resolves and validates both content bus IDs from their live site configs and assumes a migration role scoped to the target. The runner does not provide live delta synchronization or delete source objects.
 
+## Experimental browser UI
+
+```bash
+npm run ui
+# Optional:
+npm run ui -- --port 3001 --env-file .dev.vars
+```
+
+Open the printed `http://127.0.0.1:3000` URL. The server is loopback-only; do not
+expose or proxy it to a network. It uses the same private `.dev.vars` credentials
+and AWS read access as the CLI. Stop it with Ctrl+C.
+
+Enter an organization and site. The destination defaults to the same site;
+select **Use a different destination** for another organization/site.
+Source/destination fields and the different-destination toggle are saved as you
+edit them in browser local storage and restored on reload, including unfinished
+selections. A saved selection takes precedence over the last completed run;
+an active preparation still shows its actual selection. Only site selection is
+stored, not tokens, configs, reports, or the full-validation option. Storage is
+specific to the browser origin (including the local server port). If browser
+storage cannot be read or written, the UI shows a warning.
+**Prepare Migration** authenticates using the pinned `da-auth-helper` dependency
+(cached DA login or a browser sign-in), or `DA_CONFIG_TOKEN` from `.dev.vars` /
+the environment. Tokens stay on the server and are not returned to the UI.
+The authenticated identity needs `config:read` for each selected site.
+You can also use **Sign in with DA** before preparing or after an authentication
+failure. It starts a fresh browser login, replacing the helper's cached login
+and ignoring any `DA_CONFIG_TOKEN` override for subsequent preparations in this
+server session. Authentication status and login errors are shown in the UI.
+The helper uses localhost port 9898 for its callback; keep that port available.
+Signing in does not load configs or run a dry-run. A rejected (401) config
+request explicitly prompts you to sign in again; a 403 can also mean missing
+site permissions rather than a missing login.
+
+Preparation reads
+`https://api.aem.live/{org}/sites/{site}/config.json?aggregated=true`, once for
+identical source/destination sites and separately otherwise. The UI shows
+`content`, `access`, and `editor`, plus an initially collapsed whole-config view.
+Highlighted migration-state cards show whether the source has
+`content.fixedContentBusId` enabled (or a legacy pinned bus ID), and explain why
+it should be set before switching the content source URL. They also show whether
+the target prefix exists in `helix-source-bus` and, if so, whether it contains
+files or only folder markers. Existence means at least one stored object, not
+merely a site config. File counts exclude `/.props` folder metadata and
+slash-terminated directory markers, but include stored versions, trash, and
+sidecars. Unknown or failed inventory is never presented as an empty target.
+It then runs the existing read-only migration dry-run and shows source/target
+object counts, stored bytes, inventory categories, bus IDs, blockers, warnings,
+and skipped checks. Expand the whole report for details. The CLI's usual private
+JSON report is retained in `analysis/`; config responses are held in server
+memory only. Configs and reports can contain sensitive site settings: do not
+share the UI or leave the server running unnecessarily.
+
+The default is **listing-only inventory**, not a migration-readiness guarantee.
+Select **Full validation** to download and retain a private source snapshot and
+perform the CLI's body-dependent checks, image planning, and project-config
+comparison. Both modes prohibit remote writes; the UI has no execution or
+overwrite control. The CLI still resolves migration bus IDs from config-bus,
+while the UI config panels show the aggregated API view.
+
+One preparation runs at a time. Progress, config results, and the last report
+remain available on reload until the server stops or another preparation starts.
+A sticky activity banner shows a spinner while sign-in, config loading, or the
+dry-run is running, with the current phase and available progress counts. It
+distinguishes finished, blocked, failed, and disconnected states; a connection
+failure does not imply that server-side work has stopped.
+Expired AWS storage credentials are reported separately from DA authentication,
+with instructions to refresh the local AWS/KLAM session for the selected AWS
+profile or environment credentials, then retry preparation. **Sign in with DA**
+does not renew AWS credentials.
+Each new preparation rereads shared AWS credential/config files, so locally
+refreshed profile credentials take effect without restarting the UI server.
+Credentials exported in the server's environment must instead be updated in
+that environment and the server restarted; edits in another terminal cannot
+change an already running process's environment.
+Authentication/config errors are shown explicitly; successfully loaded configs
+remain visible if later inventory or validation fails.
+
 ## CLI usage
 Credentials and runtime settings are loaded from the local, git-ignored `.dev.vars` file; its non-empty values take precedence over shell variables. It holds the R2 read-only token, AWS profile/role settings, and target media API token. Keep its mode owner-only (`chmod 600 .dev.vars`).
 

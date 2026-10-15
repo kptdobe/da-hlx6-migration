@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Analysis and migration tooling from da (R2) to hlx6 (S3) backends",
   "scripts": {
+    "ui": "node bin/ui.js",
     "lint": "eslint .",
     "test": "node --test 'test/**/*.test.js'"
   },

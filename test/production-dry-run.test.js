@@ -17,6 +17,60 @@ it('requires a fresh source for execution on any site pair', () => {
   }
 });
 
+it('explains expired AWS credentials in progress and saved reports without mislabeling other errors', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'migration-expired-aws-'));
+  const envFile = path.join(directory, 'env');
+  const envKeys = ['AWS_PROFILE', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN'];
+  const previous = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+  try {
+    for (const [scenario, credentials, backend, error, shouldExplain] of [
+      ['profile', 'AWS_PROFILE=test-profile\n', 'hlx6', Object.assign(new Error('The provided token has expired.'), { name: 'ExpiredToken' }), true],
+      ['environment', 'AWS_ACCESS_KEY_ID=test-key\nAWS_SECRET_ACCESS_KEY=test-secret\nAWS_SESSION_TOKEN=test-token\n', 'hlx6',
+        Object.assign(new Error('The provided token has expired.'), { code: 'ExpiredTokenException' }), true],
+      ['other-aws-error', 'AWS_PROFILE=test-profile\n', 'hlx6', Object.assign(new Error('Access denied'), { name: 'AccessDenied' }), false],
+      ['r2-error', 'AWS_PROFILE=test-profile\n', 'da', Object.assign(new Error('The provided token has expired.'), { name: 'ExpiredToken' }), false],
+      ['untyped-error', 'AWS_PROFILE=test-profile\n', 'hlx6', new Error('The provided token has expired.'), false],
+    ]) {
+      await fs.writeFile(envFile, credentials);
+      const out = path.join(directory, `${scenario}.json`);
+      const messages = [];
+      const config = fakeClient({
+        'orgs/org/sites/site.json': { body: JSON.stringify({ content: { contentBusId: 'a'.repeat(59) } }) },
+      });
+      const report = await migrateCli(['org/site', 'org/site', '-e', envFile, '-o', out], {
+        createReadClient: (requestedBackend) => (requestedBackend === backend
+          ? { async send() { throw error; } } : config),
+        tokenProvider: () => { throw new Error('Inventory must not request DA authentication'); },
+        progress: {
+          summary() {}, onProgress() {}, close() {},
+          log(message) { messages.push(message); },
+          async run(label, operation) { return operation(); },
+        },
+      });
+      assert.equal(report.blockers.length, 1);
+      const [blocker] = report.blockers;
+      if (shouldExplain) {
+        assert.match(blocker, /AWS storage credentials have expired/);
+        assert.match(blocker, /Refresh your local AWS\/KLAM session credentials/);
+        assert.match(blocker, /not your DA login/);
+        assert.match(blocker, /"Sign in with DA" does not refresh them/);
+        assert.match(blocker, scenario === 'profile' ? /profile "test-profile".*~\/\.aws\/credentials/ : /AWS environment variables/);
+        assert.ok(!blocker.includes('test-key') && !blocker.includes('test-secret') && !blocker.includes('test-token'));
+      } else {
+        assert.equal(blocker, error.message);
+      }
+      assert.ok(messages.includes(`Blocked: ${blocker}`));
+      assert.deepEqual(JSON.parse(await fs.readFile(out, 'utf8')).blockers, report.blockers);
+    }
+  } finally {
+    for (const key of envKeys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
 it('executes cross-org migrations with resolved bus IDs and target-only writes', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'migration-execute-'));
   const envFile = path.join(directory, 'env');
@@ -563,6 +617,7 @@ it('full validation dry-runs cross-org sites with correct target keys, config UR
     });
     assert.equal(report.dryRun, true);
     assert.equal(report.validation, 'full');
+    assert.equal(report.targetFiles, 0);
     downloadedSource = report.sourceDump;
     assert.equal(path.dirname(downloadedSource), path.resolve('tmp'));
     assert.equal(report.sourceSnapshotComplete, true);

@@ -67,6 +67,26 @@ function configuredContentBusId(content) {
     ? content.fixedContentBusId : content?.contentBusId;
 }
 
+function withAwsCredentialErrors(client) {
+  return {
+    async send(command) {
+      try {
+        return await client.send(command);
+      } catch (error) {
+        if (!['ExpiredToken', 'ExpiredTokenException'].includes(error.name)
+          && !['ExpiredToken', 'ExpiredTokenException'].includes(error.code)) throw error;
+        const source = process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY
+          ? 'the AWS environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN)'
+          : `AWS profile "${process.env.AWS_PROFILE || 'default'}" in ~/.aws/credentials or its configured credential provider`;
+        throw new Error(
+          `AWS storage credentials have expired. Refresh your local AWS/KLAM session credentials for ${source}, then retry the migration preparation. These are AWS credentials, not your DA login; "Sign in with DA" does not refresh them.`,
+          { cause: error },
+        );
+      }
+    },
+  };
+}
+
 export async function migrateCli(args, {
   createReadClient = createClient,
   createWriteClient = createMigrationClient,
@@ -154,7 +174,7 @@ export async function migrateCli(args, {
     if (execute && !['S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY', 'S3_DEF_URL'].every((key) => process.env[key])) {
       throw new Error('Execution requires read-only R2 credentials in the selected env file');
     }
-    let hlxClient = readOnlyClient(createReadClient('hlx6', { retryMode: 'adaptive' }));
+    let hlxClient = readOnlyClient(withAwsCredentialErrors(createReadClient('hlx6', { retryMode: 'adaptive' })));
     const targetConfig = await progress.run('Reading target site config', () => getObject(hlxClient,
       'helix-config-bus', `orgs/${org}/sites/${hlx6Site}.json`));
     const config = JSON.parse(targetConfig.body.toString('utf8'));
@@ -184,6 +204,8 @@ export async function migrateCli(args, {
       concurrency: listingConcurrency, onProgress: progress.onProgress,
     });
     report.targetObjects = targetEntries.length;
+    report.targetFiles = targetEntries.filter(({ key }) => !key.endsWith('/')
+      && classifyHlx6(key.slice(target.length)).kind !== 'folder').length;
     report.targetBytes = targetEntries.reduce((total, entry) => total + entry.size, 0);
     report.targetSummary = summarizeInventory(targetEntries, target, 'hlx6');
     for (const [category, { objects, bytes }] of Object.entries(report.targetSummary)) {
@@ -204,7 +226,7 @@ export async function migrateCli(args, {
         daContentBusId: report.sourceContentBusId, hlx6ContentBusId: report.targetContentBusId,
       });
       report.roleArn = roleArn;
-      hlxClient = createWriteClient(scope, roleArn);
+      hlxClient = withAwsCredentialErrors(createWriteClient(scope, roleArn));
       progress.log(`Execution scope: source=${source}; target=${target}; role=${roleArn}; content writes=${scope.write[0].prefix}`);
     }
     let entries;

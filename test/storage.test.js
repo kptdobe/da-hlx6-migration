@@ -1,5 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import {
   parseDevVars, applyDevVars, listAll, listSharded, getObject, headObject, createClient, putObject,
 } from '../src/storage.js';
@@ -110,6 +113,42 @@ describe('applyDevVars', () => {
 });
 
 describe('createClient', () => {
+  it('rereads locally refreshed AWS credentials for a new preparation in the same process', async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'migration-aws-refresh-'));
+    const credentialsFile = path.join(directory, 'credentials');
+    const configFile = path.join(directory, 'config');
+    const keys = ['AWS_PROFILE', 'AWS_SHARED_CREDENTIALS_FILE', 'AWS_CONFIG_FILE',
+      'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN'];
+    const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    const clients = [];
+    try {
+      process.env.AWS_PROFILE = 'refresh-test';
+      process.env.AWS_SHARED_CREDENTIALS_FILE = credentialsFile;
+      process.env.AWS_CONFIG_FILE = configFile;
+      for (const key of ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN']) delete process.env[key];
+      await fs.writeFile(configFile, '', { mode: 0o600 });
+      for (const version of ['before', 'after']) {
+        await fs.writeFile(credentialsFile, `[refresh-test]
+aws_access_key_id=${version}-key
+aws_secret_access_key=${version}-secret
+aws_session_token=${version}-token
+`, { mode: 0o600 });
+        const client = createClient('hlx6');
+        clients.push(client);
+        const credentials = await client.config.credentials();
+        assert.equal(credentials.accessKeyId, `${version}-key`);
+        assert.equal(credentials.secretAccessKey, `${version}-secret`);
+        assert.equal(credentials.sessionToken, `${version}-token`);
+      }
+    } finally {
+      clients.forEach((client) => client.destroy());
+      for (const key of keys) {
+        if (previous[key] === undefined) delete process.env[key];
+        else process.env[key] = previous[key];
+      }
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
   it('enables SDK adaptive throttling when explicitly requested', async () => {
     const client = createClient('hlx6', { retryMode: 'adaptive' });
     assert.equal(client.config.retryMode, 'adaptive');

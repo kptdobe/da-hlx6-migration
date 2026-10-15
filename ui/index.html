@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>DA to HLX6 | Migration preparation</title>
+    <link rel="stylesheet" href="/style.css">
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <main>
+      <header>
+        <span class="badge">Experimental &middot; Local only</span>
+        <h1>Prepare your migration</h1>
+        <p>Inspect site configuration and inventory before moving from DA to HLX6. No remote writes.</p>
+      </header>
+      <div id="activity" class="activity" data-state="running" role="status" aria-live="polite" aria-atomic="true">
+        <span id="activity-spinner" class="spinner" aria-hidden="true"></span>
+        <div>
+          <strong id="activity-title">Checking activity...</strong>
+          <p id="status">Retrieving the current preparation status.</p>
+        </div>
+      </div>
+      <section class="panel" aria-label="DA authentication">
+        <h2>DA authentication</h2>
+        <p id="auth-message" role="status" aria-live="polite">Checking authentication status...</p>
+        <p id="auth-error" role="alert" hidden></p>
+        <button id="sign-in" type="button">Sign in with DA</button>
+        <p class="hint">Sign-in opens Adobe login in your browser. Return here when finished, then prepare the migration.</p>
+      </section>
+      <section class="panel">
+        <h2>Site selection</h2>
+        <form id="prepare-form">
+          <fieldset id="inputs">
+            <div class="fields">
+              <label>Organization <input name="org" required pattern="[a-z0-9][a-z0-9\-]{0,62}" placeholder="cat-digital-platform" autocomplete="off"></label>
+              <label>Site <input name="site" required pattern="[a-z0-9][a-z0-9\-]{0,62}" placeholder="catdealer" autocomplete="off"></label>
+            </div>
+            <label class="option"><input id="different-target" type="checkbox"> Use a different destination</label>
+            <div id="target-fields" class="fields" hidden>
+              <label>Destination organization <input name="targetOrg" disabled required pattern="[a-z0-9][a-z0-9\-]{0,62}" autocomplete="off"></label>
+              <label>Destination site <input name="targetSite" disabled required pattern="[a-z0-9][a-z0-9\-]{0,62}" autocomplete="off"></label>
+            </div>
+            <label class="option"><input name="fullValidation" type="checkbox"> Full validation (downloads source content to a private local snapshot)</label>
+            <p class="hint">Default: listing-only inventory. DA sign-in opens in your browser if needed. R2 and AWS credentials are loaded by the local server.</p>
+            <button id="prepare-button" type="submit">Prepare Migration</button>
+          </fieldset>
+        </form>
+        <p id="selection-notice" class="notice" role="status" hidden></p>
+      </section>
+      <p id="error" role="alert" hidden></p>
+      <section id="migration-state" class="panel" hidden aria-label="Migration state"></section>
+      <section id="configs" hidden aria-label="Site configurations"></section>
+      <section id="report" class="panel" hidden aria-label="Dry-run report"></section>
+    </main>
+  </body>
+</html>
