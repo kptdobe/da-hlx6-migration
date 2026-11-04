@@ -143,6 +143,7 @@ describe('runMigration', () => {
     assert.equal(result.dryRun, true);
     assert.equal(client.writes.length, 0);
     assert.equal(result.objects, 1);
+    assert.deepEqual(result.imageErrors, []);
   });
 
   it('writes only planned target keys and gzip-encodes text bodies', async () => {
@@ -161,6 +162,8 @@ describe('runMigration', () => {
     assert.equal(events.at(-1).completed, 1);
     assert.equal(events.at(-1).total, 1);
     assert.equal(events.at(-1).status, 'written');
+    assert.deepEqual(result.imageErrors, []);
+    assert.deepEqual(result.uploadedImageUrls, []);
     assert.equal(result.results.length, 1);
     assert.equal(client.writes.length, 1);
     assert.equal(client.writes[0].Key, object.key);

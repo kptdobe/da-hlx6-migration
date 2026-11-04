@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { parseArgs } from 'node:util';
-import { BACKENDS, applyDevVars, createClient, createMigrationClient, getObject, listSharded } from './storage.js';
+import { BACKENDS, applyDevVars, createClient, createMigrationClient, getObject, headObject, listSharded } from './storage.js';
 import { scanSite, readDump, writeDump } from './dump.js';
 import { classifyDa, classifyHlx6 } from './classify.js';
 import { preflight } from './preflight.js';
@@ -12,6 +12,7 @@ import { migrateProjectConfig } from './project-config.js';
 import { createScope } from './scope.js';
 import { createProgress, formatMigrationSummary } from './progress.js';
 import { readOnlyClient, readOnlyFetch } from './production-dry-run.js';
+import { normalizeIgnoredFolders, selectMigrationEntries } from './migration-selection.js';
 
 const SAMPLE = Object.freeze({
   org: 'kptdobe', daSite: 'sample-content-da', hlx6Site: 'sample-content-hlx6-migrated',
@@ -33,6 +34,7 @@ Options:
       --overwrite         allow writes to a nonempty target; writes still require -x
   -e, --env-file          credentials/config file (default: .dev.vars)
       --source-dump       plan from a local DA dump instead of scanning live
+      --ignore-folder     exclude a site folder and its history (repeatable; metadata reads required)
       --refresh-source    scan live; refresh --source-dump if provided
       --concurrency       download workers (1..64, default: 24)
       --listing-concurrency listing workers (1..32, default: 8)
@@ -108,6 +110,7 @@ export async function migrateCli(args, {
       'env-file': { type: 'string', short: 'e', default: '.dev.vars' },
       'refresh-source': { type: 'boolean' },
       'source-dump': { type: 'string' },
+      'ignore-folder': { type: 'string', multiple: true },
       concurrency: { type: 'string', default: '24' },
       'listing-concurrency': { type: 'string', default: '8' },
       out: { type: 'string', short: 'o' },
@@ -128,6 +131,7 @@ export async function migrateCli(args, {
     throw new Error('Execution requires --refresh-source so the migration uses a current DA snapshot');
   }
   const concurrency = Number(values.concurrency);
+  const ignoredFolders = normalizeIgnoredFolders(values['ignore-folder']);
   const listingConcurrency = Number(values['listing-concurrency']);
   if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 64
     || !Number.isInteger(listingConcurrency) || listingConcurrency < 1 || listingConcurrency > 32) {
@@ -154,6 +158,7 @@ export async function migrateCli(args, {
     source, target, dryRun: !execute, overwrite: Boolean(values.overwrite), startedAt,
     validation: fullValidation ? 'full' : 'inventory',
     concurrency, listingConcurrency, retryMode: 'adaptive', blockers: [], warnings: [],
+    ignoredFolders, excluded: [], folderExclusionMetadataReads: 0,
     ...(!fullValidation && { skippedChecks: [
       { id: 'orphan-versions', reason: 'Requires source object identity metadata; inventory does not fetch headers' },
       { id: 'migration-plan', reason: 'Requires document metadata and audit/version bodies; use --full-validation' },
@@ -229,6 +234,20 @@ export async function migrateCli(args, {
       hlxClient = withAwsCredentialErrors(createWriteClient(scope, roleArn));
       progress.log(`Execution scope: source=${source}; target=${target}; role=${roleArn}; content writes=${scope.write[0].prefix}`);
     }
+    const selectEntries = (client) => async (listed) => {
+      if (!listed.length || listed.some((entry) => !entry.key.startsWith(`${source}/`))) {
+        throw new Error('Source is empty or contains keys outside the requested DA site');
+      }
+      return selectMigrationEntries(listed, {
+        source, ignoredFolders, concurrency, onProgress: progress.onProgress,
+        readMetadata: async (key) => {
+          if (!client) throw new Error(`Source dump lacks metadata required for folder exclusions: ${key}`);
+          report.folderExclusionMetadataReads += 1;
+          return (await headObject(client, BACKENDS.da.bucket, key)).metadata;
+        },
+        onExcluded: (entry) => report.excluded.push(entry),
+      });
+    };
     let entries;
     if (values['refresh-source'] || !sourceDump) {
       const daClient = readOnlyClient(createReadClient('da', {
@@ -244,20 +263,30 @@ export async function migrateCli(args, {
         entries = await scanSite({
           client: daClient, backend: 'da', bucket: BACKENDS.da.bucket, org: daOrg, site: daSite,
           concurrency, listingConcurrency, onProgress: progress.onProgress, outDir: downloadDir,
+          selectEntries: selectEntries(daClient), snapshotMetadata: { ignoredFolders },
         });
         report.sourceSnapshotComplete = true;
-        if (sourceDump) await progress.run('Saving source snapshot', () => writeDump(sourceDump, entries, { onProgress: progress.onProgress }));
+        if (sourceDump) await progress.run('Saving source snapshot', () => writeDump(sourceDump, entries, {
+          onProgress: progress.onProgress, snapshotMetadata: { ignoredFolders },
+        }));
       } else {
-        entries = await listSharded(daClient, BACKENDS.da.bucket, `${source}/`, {
+        entries = await selectEntries(daClient)(await listSharded(daClient, BACKENDS.da.bucket, `${source}/`, {
           concurrency: listingConcurrency, onProgress: progress.onProgress,
-        });
+        }));
       }
     } else {
       report.sourceDump = path.resolve(sourceDump);
-      entries = await readDump(sourceDump, { onProgress: progress.onProgress, withBodies: fullValidation });
+      entries = await readDump(sourceDump, {
+        onProgress: progress.onProgress, withBodies: fullValidation, selectEntries: selectEntries(),
+        validateSnapshot: (snapshot) => {
+          if (snapshot.ignoredFolders?.some((folder) => !ignoredFolders.some((parent) => folder === parent || folder.startsWith(`${parent}/`)))) {
+            throw new Error('Source snapshot omits folders not ignored by this run; use --refresh-source');
+          }
+        },
+      });
     }
-    if (!entries.length || entries.some((entry) => !entry.key.startsWith(`${source}/`))) {
-      throw new Error('Source is empty or contains keys outside the requested DA site');
+    for (const { key } of report.excluded) {
+      progress.log(`SKIPPED ignored-folder: ${key}`);
     }
     if (fullValidation) {
       entries = entries.map((entry) => {
@@ -296,7 +325,7 @@ export async function migrateCli(args, {
     report.preflight = await progress.run('Checking source preflight', () => preflight(entries));
     if (!report.preflight.ok) throw new Error('Source preflight has blocking checks; see report');
     const plan = await progress.run('Building migration plan', () => buildMigrationPlan(entries, scope));
-    report.excluded = plan.excluded;
+    report.excluded.push(...plan.excluded);
     report.warnings.push(...plan.warnings);
     report.plannedObjects = plan.objects.map(({ key, sourceKey, kind }) => ({ key, sourceKey, kind }));
     progress.log(`Plan: ${plan.objects.length} objects; ${plan.excluded.length} excluded; ${plan.warnings.length} warnings`);

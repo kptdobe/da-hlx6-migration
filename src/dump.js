@@ -49,11 +49,12 @@ async function saveBody(outDir, entry, directories) {
  */
 export async function scanSite({
   client, backend, bucket, org, site, withBodies = true, concurrency = 20,
-  onProgress = () => {}, listingConcurrency = 8, outDir,
+  onProgress = () => {}, listingConcurrency = 8, outDir, selectEntries = async (entries) => entries,
+  snapshotMetadata = {},
 }) {
   const prefix = `${org}/${site}/`;
   const classify = CLASSIFIERS[backend];
-  const listed = await listSharded(client, bucket, prefix, { onProgress, concurrency: listingConcurrency });
+  const listed = await selectEntries(await listSharded(client, bucket, prefix, { onProgress, concurrency: listingConcurrency }));
   if (outDir) await fs.mkdir(outDir, { recursive: true, mode: 0o700 });
   const directories = outDir ? directoryPaths(listed.map((object) => `/${object.key.slice(prefix.length)}`)) : undefined;
   const manifest = [];
@@ -97,7 +98,7 @@ export async function scanSite({
   } finally {
     if (outDir) {
       await fs.writeFile(path.join(outDir, 'manifest.json'), JSON.stringify(manifest.sort((a, b) => a.key.localeCompare(b.key)), null, 2), { mode: 0o600 });
-      await fs.writeFile(path.join(outDir, 'snapshot.json'), JSON.stringify({ complete, downloaded: manifest.length, total }, null, 2), { mode: 0o600 });
+      await fs.writeFile(path.join(outDir, 'snapshot.json'), JSON.stringify({ ...snapshotMetadata, complete, downloaded: manifest.length, total }, null, 2), { mode: 0o600 });
     }
   }
 }
@@ -105,7 +106,7 @@ export async function scanSite({
 /**
  * Writes scan results to `outDir/manifest.json` and bodies under `outDir/files/`.
  */
-export async function writeDump(outDir, entries, { onProgress = () => {} } = {}) {
+export async function writeDump(outDir, entries, { onProgress = () => {}, snapshotMetadata } = {}) {
   const phase = `Writing local dump ${outDir}`;
   onProgress({ phase, completed: 0, total: entries.length });
   const filesDir = path.join(outDir, 'files');
@@ -121,22 +122,31 @@ export async function writeDump(outDir, entries, { onProgress = () => {} } = {})
     onProgress({ phase, completed: manifest.length, total: entries.length, key: entry.key });
   }
   await fs.writeFile(path.join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2), { mode: 0o600 });
+  if (snapshotMetadata) {
+    await fs.writeFile(path.join(outDir, 'snapshot.json'), JSON.stringify({
+      ...snapshotMetadata, complete: true, downloaded: manifest.length, total: manifest.length,
+    }, null, 2), { mode: 0o600 });
+  }
   return manifest;
 }
 
 /**
  * Reads a dump back, loading bodies into `body` Buffers.
  */
-export async function readDump(outDir, { onProgress = () => {}, withBodies = true } = {}) {
+export async function readDump(outDir, {
+  onProgress = () => {}, withBodies = true, selectEntries = async (entries) => entries,
+  validateSnapshot = () => {},
+} = {}) {
   try {
     const snapshot = JSON.parse(await fs.readFile(path.join(outDir, 'snapshot.json'), 'utf8'));
     if (!snapshot.complete) throw new Error(`Snapshot is incomplete: ${outDir}`);
+    validateSnapshot(snapshot);
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
   }
   const phase = `Reading local dump ${outDir}`;
   onProgress({ phase });
-  const manifest = JSON.parse(await fs.readFile(path.join(outDir, 'manifest.json'), 'utf8'));
+  const manifest = await selectEntries(JSON.parse(await fs.readFile(path.join(outDir, 'manifest.json'), 'utf8')));
   let completed = 0;
   onProgress({ phase, completed, total: manifest.length });
   return Promise.all(manifest.map(async (entry) => {

@@ -41,6 +41,10 @@
               <label>Destination organization <input name="targetOrg" disabled required pattern="[a-z0-9][a-z0-9\-]{0,62}" autocomplete="off"></label>
               <label>Destination site <input name="targetSite" disabled required pattern="[a-z0-9][a-z0-9\-]{0,62}" autocomplete="off"></label>
             </div>
+            <label>Ignore folders (one site path per line)
+              <textarea name="ignoredFolders" rows="3" placeholder="/drafts/esp-dev&#10;/drafts/esp-stage"></textarea>
+            </label>
+            <p class="hint">Skips these folders and their file history. Live inventory needs metadata requests to resolve versions, but never downloads excluded bodies.</p>
             <label class="option"><input name="fullValidation" type="checkbox"> Full validation (downloads source content to a private local snapshot)</label>
             <p class="hint">Default: listing-only inventory. DA sign-in opens in your browser if needed. R2 and AWS credentials are loaded by the local server.</p>
             <button id="prepare-button" type="submit">Prepare Migration</button>

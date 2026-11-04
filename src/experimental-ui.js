@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import fs from 'node:fs/promises';
 import { getValidToken, clearStoredToken } from 'da-auth-helper';
 import { migrateCli } from './migration-cli.js';
+import { normalizeIgnoredFolders } from './migration-selection.js';
 
 const SITE = /^[a-z0-9][a-z0-9-]{0,62}\/[a-z0-9][a-z0-9-]{0,62}$/;
 const ASSETS = new Map([
@@ -29,13 +30,16 @@ async function readInput(request) {
   }
   const input = JSON.parse(body);
   if (!input || typeof input !== 'object' || Array.isArray(input)
-    || Object.keys(input).some((key) => !['source', 'target', 'fullValidation'].includes(key))
+    || Object.keys(input).some((key) => !['source', 'target', 'fullValidation', 'ignoredFolders'].includes(key))
     || typeof input.source !== 'string' || !SITE.test(input.source)
     || (input.target !== undefined && (typeof input.target !== 'string' || !SITE.test(input.target)))
     || (input.fullValidation !== undefined && typeof input.fullValidation !== 'boolean')) {
     throw new Error('Expected source and optional target as org/site, and optional fullValidation boolean');
   }
-  return { source: input.source, target: input.target ?? input.source, fullValidation: input.fullValidation === true };
+  return {
+    source: input.source, target: input.target ?? input.source, fullValidation: input.fullValidation === true,
+    ignoredFolders: normalizeIgnoredFolders(input.ignoredFolders),
+  };
 }
 
 export function createExperimentalUiServer({
@@ -109,6 +113,7 @@ export function createExperimentalUiServer({
       current.report = await runDryRun([
         '--dry-run', '--env-file', envFile,
         ...(current.fullValidation ? ['--full-validation'] : []),
+        ...current.ignoredFolders.flatMap((folder) => ['--ignore-folder', folder]),
         current.source, current.target,
       ], { tokenProvider: () => token, fetchImpl, progress });
       if (!current.report || current.report.dryRun !== true) throw new Error('Expected a read-only dry-run report');

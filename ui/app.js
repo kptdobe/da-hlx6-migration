@@ -339,6 +339,7 @@ function saveSelection() {
       targetOrg: form.elements.targetOrg.value,
       targetSite: form.elements.targetSite.value,
       differentTarget: differentTarget.checked,
+      ignoredFolders: form.elements.ignoredFolders.value,
     }));
     selectionNotice.hidden = true;
   } catch {
@@ -358,6 +359,10 @@ function restoreSelection() {
       throw new Error('Invalid saved site selection');
     }
     for (const key of ['org', 'site', 'targetOrg', 'targetSite']) form.elements[key].value = selection[key];
+    if (selection.ignoredFolders !== undefined && typeof selection.ignoredFolders !== 'string') {
+      throw new Error('Invalid saved ignored folders');
+    }
+    form.elements.ignoredFolders.value = selection.ignoredFolders ?? '';
     differentTarget.checked = selection.differentTarget;
     updateTargetFields();
     hasSelection = true;
@@ -388,7 +393,10 @@ form.addEventListener('submit', async (event) => {
     await follow(await request({
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ source, target, fullValidation: data.has('fullValidation') }),
+      body: JSON.stringify({
+        source, target, fullValidation: data.has('fullValidation'),
+        ignoredFolders: data.get('ignoredFolders').split(/\r?\n/).map((folder) => folder.trim()).filter(Boolean),
+      }),
     }));
   } catch (error) {
     showError(error);
@@ -409,6 +417,7 @@ try {
     form.elements.targetSite.value = targetSite;
     updateTargetFields();
     form.elements.fullValidation.checked = job.fullValidation;
+    form.elements.ignoredFolders.value = (job.ignoredFolders ?? []).join('\n');
     if (!hasSelection) saveSelection();
   }
   await follow(job);

@@ -27,7 +27,7 @@ h3 { font-size: 1rem; }
 fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem; }
 label { display: block; font-weight: 600; }
-input:not([type="checkbox"]) { display: block; width: 100%; margin-top: .4rem; padding: .7rem; border: 1px solid #9ba8bb; border-radius: .35rem; font: inherit; }
+input:not([type="checkbox"]), textarea { display: block; width: 100%; margin-top: .4rem; padding: .7rem; border: 1px solid #9ba8bb; border-radius: .35rem; font: inherit; }
 .option { display: flex; align-items: baseline; gap: .6rem; margin: 1rem 0; font-weight: 400; }
 input[type="checkbox"] { accent-color: #3157cc; }
 button { background: #3157cc; border: 0; border-radius: .4rem; padding: .8rem 1.2rem; font: inherit; font-weight: 600; color: white; cursor: pointer; }

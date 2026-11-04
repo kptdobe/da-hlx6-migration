@@ -70,6 +70,28 @@ it('serves the browser UI and only known static assets with restrictive headers'
   }
 });
 
+it('validates ignored folders and forwards them as repeatable CLI options', async (t) => {
+  let invocation;
+  const { post, finished } = await start(t, {
+    runDryRun: async (args) => {
+      invocation = args;
+      return reportFor(...args.slice(-2));
+    },
+  });
+  for (const ignoredFolders of ['/drafts', ['/'], ['relative'], ['/a/../b'], [123]]) {
+    assert.equal((await post({ source: 'org/site', ignoredFolders })).status, 400);
+  }
+  assert.equal((await post({
+    source: 'org/site', ignoredFolders: ['/drafts/esp-dev/', '/drafts/esp-stage'],
+  })).status, 202);
+  const job = await finished();
+  assert.equal(job.status, 'complete');
+  assert.deepEqual(job.ignoredFolders, ['/drafts/esp-dev', '/drafts/esp-stage']);
+  assert.deepEqual(invocation.slice(-6), [
+    '--ignore-folder', '/drafts/esp-dev', '--ignore-folder', '/drafts/esp-stage', 'org/site', 'org/site',
+  ]);
+});
+
 it('authenticates, deduplicates identical sites, and runs only an inventory dry-run', async (t) => {
   let authenticated = false;
   let invocation;
