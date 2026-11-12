@@ -78,6 +78,13 @@ planning, destination ownership and project-config comparison require full valid
 Reports include source/target stored object counts, byte totals, inventory
 categories, warnings, blockers, skipped checks and resolved bus IDs.
 Reports are owner-only JSON files under `analysis/`; `-o` selects a new path.
+Storage failures identify the operation and exact bucket/key (or listing prefix),
+HTTP status, service error code, and available retry/request IDs. The JSON report
+also records these fields under `storageError`. An SDK `UnknownError` is not a
+root-cause diagnosis: use its HTTP status to distinguish missing objects (404),
+access failures (401/403), or throttling/service failures (429/5xx). Errors during
+body downloads or gzip decoding retain the same object context. Raw SDK responses,
+credential fields, and response bodies are not included in the diagnostic report.
 Full validation/execution retains an owner-only source snapshot under `tmp/`,
 with bodies, a manifest and a completion marker. Incomplete snapshots cannot be
 reused. `--source-dump <directory>` selects a local snapshot; `--refresh-source`
@@ -111,7 +118,9 @@ such as `/drafts/esp-dev-other` is not excluded by `/drafts/esp-dev`. The site r
 and dot/empty path segments are rejected.
 
 **Cost:** prefix checks are cheap, but DA stores history by document ID rather
-than folder. With stored history, live runs HEAD ignored current objects to
+than folder. DA IDs are random UUIDs (or caller-supplied GUIDs), not hashes of
+the path; updates and moves retain the stored ID, so generating an ID locally
+cannot recover the existing history folder. With stored history, live runs HEAD ignored current objects to
 resolve IDs, then HEAD remaining versions to check path hints. History already
 matched by an ignored ID needs no HEAD or GET. Sites without history need no
 extra metadata reads. Large histories can therefore add significant latency and
@@ -119,6 +128,10 @@ metadata-request charges, even in inventory mode. Requests use the configured
 download concurrency (`--concurrency`, default 24).
 
 Excluded bodies are never downloaded, snapshotted, parsed for images or written.
+If an ignored current object disappears after listing, its metadata 404 is logged
+as skipped, not a blocker. It remains excluded with `metadataStatus: not-found`;
+remaining version snapshots are still checked against the ignored folder paths.
+Other metadata errors, and missing objects selected for migration, still fail.
 Local dumps reuse manifest metadata without remote reads; missing required
 metadata is an explicit error. Reports list normalized `ignoredFolders`,
 excluded keys with `reason: ignored-folder`, and `folderExclusionMetadataReads`.

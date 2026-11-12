@@ -59,6 +59,61 @@ it('propagates metadata failures instead of silently migrating excluded history'
   }), /Access denied/);
 });
 
+it('skips missing ignored current objects and still filters remaining version path hints', async () => {
+  for (const original of [
+    Object.assign(new Error('UnknownError'), { name: 'UnknownError', $metadata: { httpStatusCode: 404 } }),
+    Object.assign(new Error('NotFound'), { name: 'NotFound' }),
+    Object.assign(new Error('NoSuchKey'), { code: 'NoSuchKey' }),
+    Object.assign(new Error('NoSuchKey'), { Code: 'NoSuchKey' }),
+  ]) {
+    const missingKey = `${source}/drafts/esp-stage/missing.html`;
+    const entries = [
+      { key: missingKey },
+      { key: `${source}/keep.html`, metadata: { id: 'keep' } },
+      { key: `${source}/.da-versions/missing/old.html`, metadata: { path: 'source/previous-location.html' } },
+      { key: `${source}/.da-versions/missing/v.html`, metadata: { path: 'source/drafts/esp-stage/missing.html' } },
+      { key: `${source}/.da-versions/missing/audit.txt`, metadata: {} },
+      { key: `${source}/.da-versions/keep/v.html`, metadata: { path: 'source/keep.html' } },
+    ];
+    const excluded = [];
+    const events = [];
+    const selected = await selectMigrationEntries(entries, {
+      source, ignoredFolders,
+      readMetadata: async (key) => { assert.equal(key, missingKey); throw original; },
+      onExcluded: (entry) => excluded.push(entry),
+      onProgress: (event) => events.push(event),
+    });
+    assert.deepEqual(selected, [entries[1], entries[5]]);
+    assert.deepEqual(excluded, [
+      { key: missingKey, kind: 'doc', reason: 'ignored-folder', metadataStatus: 'not-found' },
+      { key: entries[2].key, kind: 'version', reason: 'ignored-folder' },
+      { key: entries[3].key, kind: 'version', reason: 'ignored-folder' },
+      { key: entries[4].key, kind: 'audit', reason: 'ignored-folder' },
+    ]);
+    assert.ok(events.some(({ phase, key, status }) => phase === 'Skipping missing ignored source object'
+      && key === missingKey && status === 'ignored-not-found'));
+  }
+});
+
+it('does not suppress permission, service, or unresolved version metadata failures', async () => {
+  for (const original of [
+    Object.assign(new Error('Access denied'), { name: 'AccessDenied', $metadata: { httpStatusCode: 403 } }),
+    Object.assign(new Error('Service failed'), { name: 'UnknownError', $metadata: { httpStatusCode: 503 } }),
+    Object.assign(new Error('Access denied'), { name: 'NotFound', $metadata: { httpStatusCode: 403 } }),
+  ]) {
+    await assert.rejects(selectMigrationEntries([
+      { key: `${source}/drafts/esp-stage/a.html` },
+      { key: `${source}/.da-versions/id/v.html` },
+    ], {
+      source, ignoredFolders, readMetadata: async () => { throw original; },
+    }), (error) => error === original);
+  }
+  const missing = Object.assign(new Error('Missing unresolved version'), { $metadata: { httpStatusCode: 404 } });
+  await assert.rejects(selectMigrationEntries([{ key: `${source}/.da-versions/unknown/v.html` }], {
+    source, ignoredFolders, readMetadata: async () => { throw missing; },
+  }), (error) => error === missing);
+});
+
 it('needs no metadata reads without history and supports explicit internal folder paths', async () => {
   const readMetadata = () => { throw new Error('No metadata requests expected'); };
   assert.deepEqual(await selectMigrationEntries([
@@ -89,6 +144,64 @@ it('skips ignored local bodies before reading them', async (t) => {
   assert.equal(selected[0].body.toString(), 'kept');
 });
 
+for (const fullValidation of [false, true]) {
+  it(`continues ${fullValidation ? 'full validation' : 'inventory'} when an ignored file vanishes after listing`, async (t) => {
+    await fs.mkdir('tmp', { recursive: true });
+    const directory = await fs.mkdtemp(path.resolve('tmp/selection-missing-'));
+    t.after(() => fs.rm(directory, { recursive: true, force: true }));
+    const envFile = path.join(directory, 'env');
+    const out = path.join(directory, 'report.json');
+    await fs.writeFile(envFile, '');
+    const missingKey = `${source}/drafts/esp-stage/missing.html`;
+    const da = fakeClient({
+      [missingKey]: { body: 'missing after listing' },
+      [`${source}/keep.html`]: { body: '<main>keep</main>', metadata: { id: 'keep' } },
+      [`${source}/.da-versions/missing/v.html`]: { body: 'ignored', metadata: { path: 'source/drafts/esp-stage/missing.html' } },
+    });
+    const configs = fakeClient({
+      'orgs/org/sites/source.json': { body: '{"content":{}}' },
+      'orgs/org/sites/target.json': { body: '{"content":{}}' },
+    });
+    const requests = [];
+    const messages = [];
+    const report = await migrateCli([
+      source, 'org/target', '-e', envFile, '-o', out,
+      '--ignore-folder', '/drafts/esp-stage', ...(fullValidation ? ['--full-validation'] : []),
+    ], {
+      progress: {
+        ...progress,
+        log(message) { messages.push(message); },
+        onProgress(event) { if (event.status === 'ignored-not-found') messages.push(event); },
+      },
+      createReadClient: (backend) => (backend === 'hlx6' ? configs : {
+        async send(command) {
+          requests.push({ operation: command.constructor.name, key: command.input.Key });
+          if (command.constructor.name === 'HeadObjectCommand' && command.input.Key === missingKey) {
+            throw Object.assign(new Error('UnknownError'), {
+              name: 'NotFound', $metadata: { httpStatusCode: 404, attempts: 1 },
+            });
+          }
+          return da.send(command);
+        },
+      }),
+      tokenProvider: () => 'test',
+      fetchImpl: async (url) => Response.json(url.startsWith('https://admin.da.live/') ? { data: [] } : {}),
+    });
+    if (report.sourceDump) t.after(() => fs.rm(report.sourceDump, { recursive: true, force: true }));
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.sourceObjects, 1);
+    assert.equal(report.storageError, undefined);
+    assert.equal(report.excluded.find(({ key }) => key === missingKey).metadataStatus, 'not-found');
+    assert.ok(messages.some((event) => event.status === 'ignored-not-found' && event.key === missingKey));
+    assert.ok(messages.includes(`SKIPPED ignored-folder: ${missingKey}`));
+    assert.deepEqual(requests.filter(({ operation }) => operation === 'GetObjectCommand').map(({ key }) => key),
+      fullValidation ? [`${source}/keep.html`] : []);
+    const saved = JSON.parse(await fs.readFile(out, 'utf8'));
+    assert.deepEqual(saved.blockers, []);
+    assert.deepEqual(saved.excluded, report.excluded);
+  });
+}
+
 for (const mode of ['inventory', 'full validation', 'execution']) {
   const execute = mode === 'execution';
   const fullValidation = mode !== 'inventory';
@@ -107,6 +220,7 @@ for (const mode of ['inventory', 'full validation', 'execution']) {
         }
       });
     }
+
     await fs.writeFile(envFile, execute ? 'S3_ACCESS_KEY_ID=test\nS3_SECRET_ACCESS_KEY=test\nS3_DEF_URL=https://example.com\n' : '');
     const da = fakeClient({
       [`${source}/keep.html`]: { body: '<main>keep</main>', metadata: { id: 'keep' } },

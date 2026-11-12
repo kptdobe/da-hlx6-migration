@@ -28,6 +28,7 @@ export async function selectMigrationEntries(entries, {
   }));
   const excluded = new Set(entries.filter((entry) => matches(entry.key.slice(source.length))).map((entry) => entry.key));
   const ignoredIds = new Set();
+  const missingIgnoredKeys = new Set();
   const metadata = async (entry) => entry.metadata ?? readMetadata(entry.key);
   let completed = 0;
   const phase = 'Resolving ignored folders and version identities';
@@ -38,8 +39,17 @@ export async function selectMigrationEntries(entries, {
   await processQueue(candidates, async ({ entry }) => {
     excluded.add(entry.key);
     if (hasHistory) {
-      const meta = await metadata(entry);
-      if (meta.id) ignoredIds.add(meta.id);
+      try {
+        const meta = await metadata(entry);
+        if (meta.id) ignoredIds.add(meta.id);
+      } catch (error) {
+        const status = error.$metadata?.httpStatusCode;
+        const missing = status === 404 || (status === undefined
+          && [error.name, error.code, error.Code].some((code) => ['NotFound', 'NoSuchKey'].includes(code)));
+        if (!missing) throw error;
+        missingIgnoredKeys.add(entry.key);
+        onProgress({ phase: 'Skipping missing ignored source object', key: entry.key, status: 'ignored-not-found' });
+      }
     }
     completed += 1;
     onProgress({ phase, completed, total: candidates.length, key: entry.key });
@@ -48,18 +58,22 @@ export async function selectMigrationEntries(entries, {
     && !excluded.has(entry.key) && !ignoredIds.has(docId));
   completed = 0;
   onProgress({ phase, completed, total: versions.length });
-  await processQueue(versions, async ({ entry }) => {
+  await processQueue(versions, async ({ entry, docId }) => {
     const meta = await metadata(entry);
     // DA metadata paths include the site name, but not the organization.
     const hintedPath = typeof meta.path === 'string' && meta.path.includes('/')
       ? meta.path.slice(meta.path.indexOf('/')) : undefined;
     if (matches(hintedPath)) excluded.add(entry.key);
+    if (missingIgnoredKeys.has(`${source}${hintedPath}`)) ignoredIds.add(docId);
     completed += 1;
     onProgress({ phase, completed, total: versions.length, key: entry.key });
   }, concurrency);
   return classified.filter(({ entry, kind, docId }) => {
     if (!excluded.has(entry.key) && !(['version', 'audit'].includes(kind) && ignoredIds.has(docId))) return true;
-    onExcluded({ key: entry.key, kind, reason: 'ignored-folder' });
+    onExcluded({
+      key: entry.key, kind, reason: 'ignored-folder',
+      ...(missingIgnoredKeys.has(entry.key) && { metadataStatus: 'not-found' }),
+    });
     return false;
   }).map(({ entry }) => entry);
 }

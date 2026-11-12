@@ -371,6 +371,7 @@ export async function migrateCli(args, {
     progress.log(`Objects: ${result.objects}; image candidates: ${result.imageUrls.length}; uploaded: ${report.uploadedImageUrls.length}; failed URLs retained: ${report.imageErrors.length}`);
   } catch (error) {
     report.blockers.push(error.message);
+    if (error.storageError) report.storageError = error.storageError;
     progress.log(`Blocked: ${error.message}`);
   } finally {
     if (report.imageErrors?.length) {

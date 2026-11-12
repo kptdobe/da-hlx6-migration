@@ -213,3 +213,120 @@ describe('getObject / headObject', () => {
     assert.equal(res.body, undefined);
   });
 });
+
+describe('storage error context', () => {
+  const bucket = 'aem-content';
+  const key = 'org/site/drafts/esp-stage/page.html';
+  const scope = {
+    write: [{ bucket: 'helix-source-bus', prefix: 'org/site/' }],
+  };
+  for (const [operation, run] of [
+    ['HeadObject', (client) => headObject(client, bucket, key)],
+    ['GetObject', (client) => getObject(client, bucket, key)],
+    ['ListObjectsV2', (client) => listAll(client, bucket, 'org/site/')],
+    ['ListObjectsV2', (client) => listSharded(client, bucket, 'org/site/', { concurrency: 1 })],
+    ['PutObject', (client) => putObject(client, scope, { Bucket: 'helix-source-bus', Key: 'org/site/page.html', Body: 'x' })],
+  ]) {
+    it(`preserves HTTP diagnostics and identity for failed ${operation} requests`, async () => {
+      const original = Object.assign(new Error('UnknownError'), {
+        name: 'UnknownError',
+        $metadata: { httpStatusCode: 503, attempts: 5, requestId: 'request-123', extendedRequestId: 'extended-123' },
+        $response: { headers: { 'cf-ray': 'ray-123', authorization: 'private-header' }, body: 'private-response' },
+        'Token-0': 'private-token',
+      });
+      await assert.rejects(run({ async send() { throw original; } }), (error) => {
+        assert.equal(error.name, original.name);
+        assert.equal(error.cause, original);
+        assert.deepEqual(error.$metadata, original.$metadata);
+        assert.equal(error.storageError.operation, operation);
+        assert.equal(error.storageError.serviceCode, 'UnknownError');
+        assert.equal(error.storageError.httpStatusCode, 503);
+        assert.equal(error.storageError.attempts, 5);
+        assert.equal(error.storageError.requestId, 'request-123');
+        assert.equal(error.storageError.extendedRequestId, 'extended-123');
+        assert.equal(error.storageError.cfRay, 'ray-123');
+        assert.match(error.message, new RegExp(`${operation} failed for "s3://`));
+        assert.match(error.message, /HTTP 503 Service Unavailable/);
+        assert.match(error.message, /attempts=5/);
+        assert.match(error.message, /requestId="request-123"/);
+        assert.match(error.message, /Storage throttling or service failure/);
+        if (operation === 'ListObjectsV2') {
+          assert.equal(error.storageError.prefix, 'org/site/');
+          assert.equal(error.storageError.key, undefined);
+        } else {
+          assert.equal(error.storageError.key, operation === 'PutObject' ? 'org/site/page.html' : key);
+        }
+        assert.doesNotMatch(error.message + JSON.stringify(error.storageError), /private-header|private-response|private-token/);
+        return true;
+      });
+    });
+  }
+
+  it('distinguishes missing objects and access failures without changing service codes', async () => {
+    for (const [name, status, hint] of [
+      ['NoSuchKey', 404, /Object not found.*deleted after listing/],
+      ['UnknownError', 404, /Object not found.*deleted after listing/],
+      ['AccessDenied', 403, /Check storage credentials and bucket\/object permissions/],
+    ]) {
+      const original = Object.assign(new Error(name), { name, code: name, $metadata: { httpStatusCode: status } });
+      await assert.rejects(headObject({ async send() { throw original; } }, bucket, key), (error) => {
+        assert.equal(error.name, name);
+        assert.equal(error.code, name);
+        assert.equal(error.$metadata.httpStatusCode, status);
+        assert.match(error.message, hint);
+        return true;
+      });
+    }
+  });
+
+  it('uses the service Code and raw response status when SDK metadata is absent', async () => {
+    const original = Object.assign(new Error('UnknownError'), {
+      name: 'UnknownError', Code: 'SlowDown',
+      $response: { statusCode: 429, headers: { 'x-amz-request-id': 'header-request' } },
+    });
+    await assert.rejects(headObject({ async send() { throw original; } }, bucket, key), (error) => {
+      assert.equal(error.Code, 'SlowDown');
+      assert.equal(error.$metadata.httpStatusCode, 429);
+      assert.equal(error.storageError.serviceCode, 'SlowDown');
+      assert.equal(error.storageError.requestId, 'header-request');
+      assert.match(error.message, /SlowDown; HTTP 429 Too Many Requests/);
+      return true;
+    });
+  });
+
+  it('keeps transport failures explicit when no HTTP response exists', async () => {
+    const original = new Error('Connection failed', { cause: Object.assign(new Error('reset'), { code: 'ECONNRESET' }) });
+    await assert.rejects(headObject({ async send() { throw original; } }, bucket, key), (error) => {
+      assert.match(error.message, /HTTP status unavailable/);
+      assert.match(error.message, /causeCode="ECONNRESET"/);
+      assert.match(error.message, /Connection failed/);
+      assert.equal(error.storageError.httpStatusCode, undefined);
+      return true;
+    });
+  });
+
+  it('includes the object context when the response body or gzip decoding fails', async () => {
+    for (const gzip of [false, true]) {
+      const client = {
+        async send() {
+          return {
+            $metadata: { httpStatusCode: 200, requestId: 'body-request' },
+            ContentEncoding: gzip ? 'gzip' : undefined,
+            Body: { async transformToByteArray() {
+              if (!gzip) throw Object.assign(new Error('Stream interrupted'), { code: 'ECONNRESET' });
+              return Buffer.from('not gzip');
+            } },
+          };
+        },
+      };
+      await assert.rejects(getObject(client, bucket, key), (error) => {
+        assert.equal(error.storageError.operation, 'GetObject');
+        assert.equal(error.storageError.key, key);
+        assert.equal(error.storageError.httpStatusCode, 200);
+        assert.equal(error.storageError.requestId, 'body-request');
+        assert.match(error.message, gzip ? /Z_DATA_ERROR/ : /Stream interrupted/);
+        return true;
+      });
+    }
+  });
+});

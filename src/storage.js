@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import https from 'node:https';
+import { STATUS_CODES } from 'node:http';
 import { gunzipSync } from 'node:zlib';
 import {
   S3Client, ListObjectsV2Command, HeadObjectCommand, GetObjectCommand, PutObjectCommand,
@@ -15,13 +16,63 @@ export const BACKENDS = {
   hlx6: { bucket: 'helix-source-bus', region: 'us-east-1' },
 };
 
+async function storageRequest(client, command, read = (response) => response) {
+  let response;
+  try {
+    response = await client.send(command);
+    return await read(response);
+  } catch (error) {
+    const operation = command.constructor.name.replace(/Command$/, '');
+    const { Bucket: bucket, Key: key, Prefix: prefix } = command.input;
+    const metadata = error.$metadata || error.cause?.$metadata || response?.$metadata || {};
+    const responseHeaders = error.$response?.headers || {};
+    const serviceCode = error.Code || error.code
+      || (error.name === 'Error' && error.cause?.name) || error.name || 'UnknownError';
+    const details = Object.fromEntries(Object.entries({
+      operation, bucket, key, prefix, serviceCode,
+      httpStatusCode: metadata.httpStatusCode ?? error.$response?.statusCode,
+      attempts: metadata.attempts,
+      requestId: metadata.requestId || responseHeaders['x-amz-request-id'],
+      extendedRequestId: metadata.extendedRequestId,
+      cfRay: responseHeaders['cf-ray'],
+      causeCode: error.cause?.code,
+    }).filter(([, value]) => value !== undefined));
+    const status = details.httpStatusCode;
+    const context = [
+      serviceCode,
+      status ? `HTTP ${status}${STATUS_CODES[status] ? ` ${STATUS_CODES[status]}` : ''}` : 'HTTP status unavailable',
+      ...['attempts', 'requestId', 'extendedRequestId', 'cfRay', 'causeCode']
+        .filter((field) => details[field] !== undefined)
+        .map((field) => `${field}=${JSON.stringify(details[field])}`),
+    ];
+    if (error.message && error.message !== serviceCode) context.push(error.message);
+    if (status === 404 && ['HeadObject', 'GetObject'].includes(operation)) {
+      context.push('Object not found; it may have been deleted after listing. Refresh the source inventory');
+    } else if (status === 401 || status === 403) {
+      context.push('Check storage credentials and bucket/object permissions');
+    } else if (status === 429 || status >= 500) {
+      context.push('Storage throttling or service failure');
+    }
+    const failure = new Error(
+      `${operation} failed for ${JSON.stringify(`s3://${bucket}/${key ?? prefix ?? ''}`)}: ${context.join('; ')}`,
+      { cause: error },
+    );
+    failure.name = error.name || 'Error';
+    if (error.code !== undefined) failure.code = error.code;
+    if (error.Code !== undefined) failure.Code = error.Code;
+    failure.$metadata = { ...metadata, httpStatusCode: details.httpStatusCode };
+    failure.storageError = details;
+    throw failure;
+  }
+}
+
 /**
  * Writes an object after checking it is inside the migration scope.
  * @param {object} params PutObject input (Bucket, Key, Body, ContentType, ...)
  */
 export async function putObject(client, scope, params) {
   assertWritable(scope, params.Bucket, params.Key);
-  return client.send(new PutObjectCommand(params));
+  return storageRequest(client, new PutObjectCommand(params));
 }
 
 /**
@@ -136,7 +187,7 @@ export async function listAll(client, bucket, prefix, { onProgress = () => {} } 
   onProgress({ phase: `Listing s3://${bucket}/${prefix}`, completed: 0 });
   let ContinuationToken;
   do {
-    const resp = await client.send(new ListObjectsV2Command({
+    const resp = await storageRequest(client, new ListObjectsV2Command({
       Bucket: bucket, Prefix: prefix, ContinuationToken,
     }));
     (resp.Contents || []).forEach((o) => objects.push({
@@ -183,7 +234,7 @@ export async function listSharded(client, bucket, prefix, {
     let ContinuationToken;
     let finished;
     do {
-      const response = await client.send(new ListObjectsV2Command({
+      const response = await storageRequest(client, new ListObjectsV2Command({
         Bucket: bucket, Prefix: prefix,
         ...(lower && { StartAfter: lower }),
         ...(ContinuationToken && { ContinuationToken }),
@@ -224,7 +275,7 @@ function headers(resp) {
 }
 
 export async function headObject(client, bucket, key) {
-  return headers(await client.send(new HeadObjectCommand({ Bucket: bucket, Key: key })));
+  return headers(await storageRequest(client, new HeadObjectCommand({ Bucket: bucket, Key: key })));
 }
 
 /**
@@ -232,8 +283,9 @@ export async function headObject(client, bucket, key) {
  * @returns {Promise<{body: Buffer} & ReturnType<typeof headers>>}
  */
 export async function getObject(client, bucket, key) {
-  const resp = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
-  let body = Buffer.from(await resp.Body.transformToByteArray());
-  if (resp.ContentEncoding === 'gzip') body = gunzipSync(body);
-  return { ...headers(resp), body };
+  return storageRequest(client, new GetObjectCommand({ Bucket: bucket, Key: key }), async (resp) => {
+    let body = Buffer.from(await resp.Body.transformToByteArray());
+    if (resp.ContentEncoding === 'gzip') body = gunzipSync(body);
+    return { ...headers(resp), body };
+  });
 }

@@ -57,8 +57,9 @@ it('explains expired AWS credentials in progress and saved reports without misla
         assert.match(blocker, scenario === 'profile' ? /profile "test-profile".*~\/\.aws\/credentials/ : /AWS environment variables/);
         assert.ok(!blocker.includes('test-key') && !blocker.includes('test-secret') && !blocker.includes('test-token'));
       } else {
-        assert.equal(blocker, error.message);
+        assert.ok(blocker.includes(error.message));
       }
+      assert.equal(report.storageError.operation, backend === 'hlx6' ? 'GetObject' : 'ListObjectsV2');
       assert.ok(messages.includes(`Blocked: ${blocker}`));
       assert.deepEqual(JSON.parse(await fs.readFile(out, 'utf8')).blockers, report.blockers);
     }
@@ -69,6 +70,64 @@ it('explains expired AWS credentials in progress and saved reports without misla
     }
     await fs.rm(directory, { recursive: true, force: true });
   }
+});
+
+it('logs and saves the exact ignored-folder HEAD failure instead of only UnknownError', async (t) => {
+  await fs.mkdir('tmp', { recursive: true });
+  const directory = await fs.mkdtemp(path.resolve('tmp/migration-storage-error-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const envFile = path.join(directory, 'env');
+  const out = path.join(directory, 'report.json');
+  await fs.writeFile(envFile, '');
+  const key = 'org/source/drafts/esp-stage/page.html';
+  const da = fakeClient({
+    [key]: { body: 'ignored', metadata: { id: 'ignored' } },
+    'org/source/.da-versions/ignored/version.html': { body: 'old' },
+  });
+  const configs = fakeClient({
+    'orgs/org/sites/source.json': { body: '{"content":{}}' },
+    'orgs/org/sites/target.json': { body: '{"content":{}}' },
+  });
+  const messages = [];
+  const report = await migrateCli([
+    'org/source', 'org/target', '--ignore-folder', '/drafts/esp-stage', '-e', envFile, '-o', out,
+  ], {
+    progress: {
+      summary() {}, onProgress() {}, close() {},
+      log(message) { messages.push(message); },
+      async run(label, action) { return action(); },
+    },
+    createReadClient: (backend) => (backend === 'hlx6' ? configs : {
+      async send(command) {
+        if (command.constructor.name === 'HeadObjectCommand') {
+          assert.equal(command.input.Key, key);
+          throw Object.assign(new Error('UnknownError'), {
+            name: 'UnknownError', $metadata: { httpStatusCode: 503, attempts: 5, requestId: 'r2-request' },
+            'Token-0': 'private-token',
+            $response: { body: 'private-body', headers: { 'cf-ray': 'r2-ray', authorization: 'private-auth' } },
+          });
+        }
+        return da.send(command);
+      },
+    }),
+    tokenProvider: () => { throw new Error('Inventory must not authenticate with DA'); },
+  });
+  assert.equal(report.blockers.length, 1);
+  const [blocker] = report.blockers;
+  assert.ok(blocker.includes(`HeadObject failed for "s3://aem-content/${key}"`));
+  assert.match(blocker, /UnknownError; HTTP 503 Service Unavailable/);
+  assert.match(blocker, /attempts=5/);
+  assert.match(blocker, /requestId="r2-request"/);
+  assert.match(blocker, /cfRay="r2-ray"/);
+  assert.ok(messages.includes(`Blocked: ${blocker}`));
+  assert.deepEqual(report.storageError, {
+    operation: 'HeadObject', bucket: 'aem-content', key, serviceCode: 'UnknownError',
+    httpStatusCode: 503, attempts: 5, requestId: 'r2-request', cfRay: 'r2-ray',
+  });
+  const saved = await fs.readFile(out, 'utf8');
+  assert.deepEqual(JSON.parse(saved).storageError, report.storageError);
+  assert.deepEqual(JSON.parse(saved).blockers, report.blockers);
+  assert.doesNotMatch(saved, /private-token|private-body|private-auth/);
 });
 
 it('executes cross-org migrations with resolved bus IDs and target-only writes', async () => {
@@ -318,7 +377,9 @@ it('retains completed write and image counts in the report and final summary aft
       },
     });
     downloadedSource = report.sourceDump;
-    assert.deepEqual(report.blockers, ['Storage unavailable']);
+    assert.equal(report.blockers.length, 1);
+    assert.match(report.blockers[0], /PutObject failed.*target-org\/target-site\/b\.html.*Storage unavailable/);
+    assert.equal(report.storageError.operation, 'PutObject');
     assert.deepEqual(report.uploadedImageUrls, [imageUrl]);
     assert.equal(report.results.filter(({ status }) => status === 'written').length, 1);
     assert.match(messages.at(-1), /Migration blocked after/);

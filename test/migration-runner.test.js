@@ -107,6 +107,27 @@ describe('runMigration', () => {
     assert.equal(client.writes.length, 0);
   });
 
+  it('still handles conditional-write races after storage errors gain diagnostic context', async () => {
+    const client = fakeClient([], {
+      [object.key]: { 'da-id': 'doc-id', 'da-source-sha256': sourceHash },
+    });
+    const send = client.send;
+    client.send = async (command) => {
+      if (command.constructor.name === 'PutObjectCommand') {
+        throw Object.assign(new Error('Precondition failed'), {
+          name: 'PreconditionFailed', $metadata: { httpStatusCode: 412 },
+        });
+      }
+      return send(command);
+    };
+    const result = await runMigration({ objects: [object] }, {
+      client,
+      scope: { ...scope, write: [{ bucket: 'helix-source-bus', prefix: 'kptdobe/sample-content-hlx6-migrated/' }] },
+      execute: true,
+    });
+    assert.deepEqual(result.results, [{ key: object.key, status: 'exists', kind: 'doc' }]);
+  });
+
   it('dry-run reports API upload candidates and excludes target-site URLs', async () => {
     const client = fakeClient();
     const sourceUrls = [
