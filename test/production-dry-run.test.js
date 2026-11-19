@@ -9,6 +9,26 @@ import { migrateCli } from '../src/migration-cli.js';
 import { fakeClient } from './fixtures/fake-client.js';
 import { scanSite } from '../src/dump.js';
 
+it('requires a fresh source or explicit snapshot resume for execution on any site pair', () => {
+  for (const flag of ['-x', '--execute']) {
+    const result = spawnSync(process.execPath, ['bin/migrate.js', 'adobecom/da-events', 'kptdobe/da-events-migrated', flag], { encoding: 'utf8' });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Execution requires --refresh-source/);
+    assert.equal(result.stdout, '');
+  }
+});
+
+it('rejects invalid resume option combinations before creating a report', async () => {
+  for (const flags of [
+    ['--resume'],
+    ['--resume', '--execute'],
+    ['--resume', '--source-dump', 'unused'],
+    ['--resume', '--execute', '--source-dump', 'unused', '--refresh-source'],
+  ]) {
+    await assert.rejects(migrateCli(['org/site', 'org/target', ...flags]), /--resume requires/);
+  }
+});
+
 it('logs skipped audit records and persists their original lines in the private full-validation report', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'migration-audit-'));
   const dump = path.join(directory, 'dump');
@@ -60,12 +80,117 @@ it('logs skipped audit records and persists their original lines in the private 
   }
 });
 
-it('requires a fresh source for execution on any site pair', () => {
-  for (const flag of ['-x', '--execute']) {
-    const result = spawnSync(process.execPath, ['bin/migrate.js', 'adobecom/da-events', 'kptdobe/da-events-migrated', flag], { encoding: 'utf8' });
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /Execution requires --refresh-source/);
-    assert.equal(result.stdout, '');
+it('resumes complete snapshots only when live source inventory still matches, without source downloads', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'migration-resume-'));
+  const dump = path.join(directory, 'dump');
+  const envFile = path.join(directory, 'env');
+  const envKeys = ['S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY', 'S3_DEF_URL'];
+  const previous = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+  await fs.writeFile(envFile, 'S3_ACCESS_KEY_ID=test\nS3_SECRET_ACCESS_KEY=test\nS3_DEF_URL=https://example.com\n');
+  const sourceKey = 'source-org/source-site/index.html';
+  const sourceObjects = { [sourceKey]: { body: '<main>source</main>', metadata: { id: 'source-id' } } };
+  await scanSite({
+    client: fakeClient(sourceObjects), backend: 'da', bucket: 'aem-content',
+    org: 'source-org', site: 'source-site', outDir: dump,
+  });
+  const progress = { summary() {}, log() {}, onProgress() {}, close() {}, async run(label, operation) { return operation(); } };
+  try {
+    for (const scenario of ['match', 'precision', 'etag', 'size', 'modified', 'modified-second', 'added', 'missing', 'duplicate', 'wrong-source', 'authentication', 'nonempty-target']) {
+      const liveObjects = scenario === 'missing' ? {
+        'source-org/source-site/other.html': { body: 'other' },
+      } : {
+        ...sourceObjects,
+        ...(scenario === 'added' && { 'source-org/source-site/added.html': { body: 'new' } }),
+      };
+      const da = fakeClient(liveObjects);
+      const configs = fakeClient({
+        'orgs/source-org/sites/source-site.json': { body: JSON.stringify({ content: { contentBusId: 'a'.repeat(59) } }) },
+        'orgs/target-org/sites/target-site.json': { body: JSON.stringify({ content: { contentBusId: 'b'.repeat(59) } }) },
+        ...(scenario === 'nonempty-target' && { 'target-org/target-site/index.html': { body: 'existing' } }),
+      });
+      const savedManifest = await fs.readFile(path.join(dump, 'manifest.json'), 'utf8');
+      const savedMarker = await fs.readFile(path.join(dump, 'snapshot.json'), 'utf8');
+      if (scenario === 'duplicate' || scenario === 'wrong-source') {
+        const manifest = JSON.parse(savedManifest);
+        if (scenario === 'duplicate') manifest.push({ ...manifest[0] });
+        else manifest[0].key = 'wrong-org/wrong-site/index.html';
+        await fs.writeFile(path.join(dump, 'manifest.json'), JSON.stringify(manifest));
+        await fs.writeFile(path.join(dump, 'snapshot.json'), JSON.stringify({ complete: true, downloaded: manifest.length, total: manifest.length }));
+      }
+      const writes = [];
+      const apiCalls = [];
+      let authenticated = false;
+      try {
+        const report = await migrateCli([
+          'source-org/source-site', 'target-org/target-site', '--execute', '--resume',
+          '--source-dump', dump, '-e', envFile, '-o', path.join(directory, `${scenario}.json`),
+        ], {
+          progress,
+          createReadClient: (backend) => {
+            if (backend !== 'da') return configs;
+            assert.equal(authenticated, true);
+            return { async send(command) {
+              assert.equal(command.constructor.name, 'ListObjectsV2Command');
+              const response = await da.send(command);
+              for (const entry of response.Contents) {
+                if (scenario === 'etag') entry.ETag = '"changed-etag"';
+                if (scenario === 'size') entry.Size += 1;
+                if (scenario === 'modified') entry.LastModified = new Date('2026-02-01');
+                if (scenario === 'modified-second') entry.LastModified = new Date('2026-01-01T00:00:01.000Z');
+                if (scenario === 'precision') entry.LastModified = new Date('2026-01-01T00:00:00.895Z');
+              }
+              return response;
+            } };
+          },
+          createWriteClient: () => ({ async send(command) {
+            if (command.constructor.name === 'ListObjectsV2Command') return { Contents: [] };
+            assert.equal(command.constructor.name, 'PutObjectCommand');
+            assert.equal(command.input.IfNoneMatch, '*');
+            writes.push(command.input.Key);
+            return {};
+          } }),
+          tokenProvider: () => {
+            if (scenario === 'authentication') throw new Error('DA login unavailable');
+            authenticated = true;
+            return 'test-token';
+          },
+          fetchImpl: async (url, options = {}) => {
+            apiCalls.push({ url, method: options.method || 'GET' });
+            return { status: 404 };
+          },
+        });
+        assert.equal(report.resume, true);
+        if (scenario === 'match' || scenario === 'precision') {
+          assert.deepEqual(report.blockers, []);
+          assert.equal(report.sourceSnapshotComplete, true);
+          assert.equal(report.sourceInventoryVerified, true);
+          assert.equal(report.sourceDump, dump);
+          assert.equal(report.sourceObjects, 1);
+          assert.deepEqual(writes, ['target-org/target-site/index.html']);
+        } else {
+          assert.equal(report.blockers.length, 1);
+          const expected = {
+            authentication: /DA login unavailable/,
+            'nonempty-target': /requires --overwrite/,
+            'wrong-source': /outside the requested DA site/,
+          }[scenario] || /Source inventory does not match.*--refresh-source/;
+          assert.match(report.blockers[0], expected);
+          assert.deepEqual(writes, []);
+          assert.deepEqual(apiCalls, []);
+          if (['authentication', 'nonempty-target'].includes(scenario)) assert.deepEqual(da.calls, []);
+        }
+        assert.deepEqual(JSON.parse(await fs.readFile(path.join(directory, `${scenario}.json`), 'utf8')).blockers, report.blockers);
+      } finally {
+        await fs.writeFile(path.join(dump, 'manifest.json'), savedManifest);
+        await fs.writeFile(path.join(dump, 'snapshot.json'), savedMarker);
+      }
+    }
+  } finally {
+    for (const key of envKeys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+    await fs.rm(directory, { recursive: true, force: true });
   }
 });
 
@@ -521,7 +646,7 @@ it('requires explicit overwrite for any target-prefix object before downloading 
           assert.equal(report.sourceDump, undefined);
         } else {
           assert.deepEqual(report.blockers, ['Reached full validation']);
-          assert.ok(da.calls.includes('GetObjectCommand'));
+          assert.deepEqual(da.calls, []);
         }
         assert.ok(configs.calls.every((name) => ['GetObjectCommand', 'ListObjectsV2Command'].includes(name)));
       }

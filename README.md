@@ -91,6 +91,23 @@ reused. `--source-dump <directory>` selects a local snapshot; `--refresh-source`
 refreshes it from DA. Snapshots and reports contain confidential site data:
 they are git-ignored and must be removed manually when no longer needed.
 
+If execution stops after completing its source snapshot, resume without another
+download:
+
+```bash
+node bin/migrate.js <source-org/source-site> <target-org/target-site> \
+  --execute --resume --source-dump tmp/<completed-snapshot>
+```
+
+Resume requires a complete snapshot with all bodies and matching completion counts.
+It compares the selected live source keys, ETags, stored sizes and modification
+times (at HTTP-date second precision) with the snapshot before loading bodies
+or writing anything. Changed,
+added or missing source objects block resume; use `--refresh-source` instead.
+Keep DA edits frozen through verification and cutover. Resume does not bypass
+target conflicts or overwrite protection. Full validation and execution obtain
+DA authentication before loading or downloading source bodies.
+
 Execution additionally requires the dedicated `da-hlx6-migration` AWS role, the R2 read-only credentials, and a DA auth token whose identity is authorized for DA config/image reads and target `media:upload`, `config:read`, and `config:write`. The runner obtains one token from the local `da-auth/src/cli.js token` helper, or uses `DA_CONFIG_TOKEN` if supplied, and shares it across these API calls. No separate target-specific bearer tokens are required. Put the AWS and R2 settings in `.dev.vars`, then run `node bin/migrate.js <source-org/source-site> <target-org/target-site> --refresh-source -x`. It has no delete path and refuses unplanned target objects.
 
 Any stored object under the target site's prefix requires explicit `--overwrite`

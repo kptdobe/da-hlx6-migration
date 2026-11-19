@@ -29,13 +29,14 @@ Execution uses a target-scoped migration role for the requested source and targe
 Options:
       --dry-run           explicitly select read-only inventory (default)
       --full-validation   download source objects for full migration validation
-  -x, --execute           execute migration (requires --refresh-source)
+  -x, --execute           execute migration (requires --refresh-source or --resume)
       --role-arn          scoped migration role (default: MIGRATION_ROLE_ARN or shared role)
       --overwrite         allow writes to a nonempty target; writes still require -x
   -e, --env-file          credentials/config file (default: .dev.vars)
       --source-dump       plan from a local DA dump instead of scanning live
       --ignore-folder     exclude a site folder and its history (repeatable; metadata reads required)
       --refresh-source    scan live; refresh --source-dump if provided
+      --resume            execute a complete --source-dump after verifying live inventory
       --concurrency       download workers (1..64, default: 24)
       --listing-concurrency listing workers (1..32, default: 8)
   -o, --out               new JSON report path (default: timestamped file in analysis/)
@@ -67,6 +68,23 @@ function summarizeInventory(entries, site, backend) {
 function configuredContentBusId(content) {
   return typeof content?.fixedContentBusId === 'string' && content.fixedContentBusId
     ? content.fixedContentBusId : content?.contentBusId;
+}
+
+function verifySourceInventory(saved, live) {
+  const savedKeys = new Set(saved.map(({ key }) => key));
+  const liveByKey = new Map(live.map((entry) => [entry.key, entry]));
+  const changed = saved.filter((entry) => {
+    const current = liveByKey.get(entry.key);
+    // GET/HEAD HTTP dates have second precision; R2 listings include milliseconds.
+    return !current || !entry.etag || !entry.lastModified
+      || entry.etag !== current.etag || entry.size !== current.size
+      || Math.floor(Date.parse(entry.lastModified) / 1000)
+        !== Math.floor(Date.parse(current.lastModified) / 1000);
+  });
+  const added = live.filter(({ key }) => !savedKeys.has(key));
+  if (savedKeys.size !== saved.length || changed.length || added.length) {
+    throw new Error(`Source inventory does not match the snapshot: ${changed.length} changed/missing objects, ${added.length} added objects; use --refresh-source`);
+  }
 }
 
 function withAwsCredentialErrors(client) {
@@ -109,6 +127,7 @@ export async function migrateCli(args, {
       overwrite: { type: 'boolean' },
       'env-file': { type: 'string', short: 'e', default: '.dev.vars' },
       'refresh-source': { type: 'boolean' },
+      resume: { type: 'boolean' },
       'source-dump': { type: 'string' },
       'ignore-folder': { type: 'string', multiple: true },
       concurrency: { type: 'string', default: '24' },
@@ -127,8 +146,11 @@ export async function migrateCli(args, {
   const [source = `${SAMPLE.org}/${SAMPLE.daSite}`, target = `${SAMPLE.org}/${SAMPLE.hlx6Site}`] = positionals;
   if (!SITE.test(source) || !SITE.test(target)) throw new Error('Invalid source or target: expected org/site');
   if (values.execute && values['dry-run']) throw new Error('--execute and --dry-run cannot be combined');
-  if (values.execute && !values['refresh-source']) {
-    throw new Error('Execution requires --refresh-source so the migration uses a current DA snapshot');
+  if (values.resume && (!values.execute || !values['source-dump'] || values['refresh-source'])) {
+    throw new Error('--resume requires --execute and --source-dump, and cannot be combined with --refresh-source');
+  }
+  if (values.execute && !values['refresh-source'] && !values.resume) {
+    throw new Error('Execution requires --refresh-source or --resume with a complete --source-dump');
   }
   const concurrency = Number(values.concurrency);
   const ignoredFolders = normalizeIgnoredFolders(values['ignore-folder']);
@@ -156,6 +178,7 @@ export async function migrateCli(args, {
   const progress = suppliedProgress || createProgress();
   const report = {
     source, target, dryRun: !execute, overwrite: Boolean(values.overwrite), startedAt,
+    resume: Boolean(values.resume),
     validation: fullValidation ? 'full' : 'inventory',
     concurrency, listingConcurrency, retryMode: 'adaptive', blockers: [], warnings: [],
     ignoredFolders, excluded: [], folderExclusionMetadataReads: 0,
@@ -234,7 +257,9 @@ export async function migrateCli(args, {
       hlxClient = withAwsCredentialErrors(createWriteClient(scope, roleArn));
       progress.log(`Execution scope: source=${source}; target=${target}; role=${roleArn}; content writes=${scope.write[0].prefix}`);
     }
-    const selectEntries = (client) => async (listed) => {
+    const apiToken = fullValidation
+      ? await progress.run('Obtaining DA auth token (not logged)', tokenProvider) : undefined;
+    const selectEntries = (client, onExcluded = (entry) => report.excluded.push(entry)) => async (listed) => {
       if (!listed.length || listed.some((entry) => !entry.key.startsWith(`${source}/`))) {
         throw new Error('Source is empty or contains keys outside the requested DA site');
       }
@@ -245,7 +270,7 @@ export async function migrateCli(args, {
           report.folderExclusionMetadataReads += 1;
           return (await headObject(client, BACKENDS.da.bucket, key)).metadata;
         },
-        onExcluded: (entry) => report.excluded.push(entry),
+        onExcluded,
       });
     };
     let entries;
@@ -277,13 +302,32 @@ export async function migrateCli(args, {
     } else {
       report.sourceDump = path.resolve(sourceDump);
       entries = await readDump(sourceDump, {
-        onProgress: progress.onProgress, withBodies: fullValidation, selectEntries: selectEntries(),
+        onProgress: progress.onProgress, withBodies: fullValidation, concurrency,
+        requireComplete: Boolean(values.resume),
+        selectEntries: async (listed) => {
+          const selected = await selectEntries()(listed);
+          if (values.resume) {
+            await progress.run('Verifying source snapshot against live DA inventory', async () => {
+              const daClient = readOnlyClient(createReadClient('da', {
+                devVarsPath: values['env-file'], retryMode: 'adaptive',
+              }));
+              const live = await selectEntries(daClient, () => {})(await listSharded(daClient,
+                BACKENDS.da.bucket, `${source}/`, {
+                  concurrency: listingConcurrency, onProgress: progress.onProgress,
+                }));
+              verifySourceInventory(selected, live);
+              report.sourceInventoryVerified = true;
+            });
+          }
+          return selected;
+        },
         validateSnapshot: (snapshot) => {
           if (snapshot.ignoredFolders?.some((folder) => !ignoredFolders.some((parent) => folder === parent || folder.startsWith(`${parent}/`)))) {
             throw new Error('Source snapshot omits folders not ignored by this run; use --refresh-source');
           }
         },
       });
+      if (values.resume) report.sourceSnapshotComplete = true;
     }
     for (const { key } of report.excluded) {
       progress.log(`SKIPPED ignored-folder: ${key}`);
@@ -335,7 +379,6 @@ export async function migrateCli(args, {
     for (const failure of plan.warnings.find(({ id }) => id === 'malformed-audit-records')?.items || []) {
       progress.log(`SKIPPED malformed-audit-record: ${failure.key}:${failure.line}: ${failure.error}`);
     }
-    const apiToken = await progress.run('Obtaining DA auth token (not logged)', tokenProvider);
     const configOptions = {
       scope, daConfigToken: apiToken, configToken: apiToken, onProgress: progress.onProgress,
       fetchImpl: execute ? fetchImpl : readOnlyFetch(fetchImpl),
