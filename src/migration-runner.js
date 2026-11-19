@@ -119,7 +119,7 @@ function prepareObject(object, replacements, scope) {
 }
 
 function writeRank(kind) {
-  return ({ version: 0, doc: 1, sheet: 1, media: 1, trash: 1, folder: 2 })[kind] ?? 3;
+  return ({ version: 0, audit: 1, doc: 2, sheet: 2, media: 2, trash: 2, folder: 3 })[kind] ?? 4;
 }
 
 /**

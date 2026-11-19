@@ -332,6 +332,9 @@ export async function migrateCli(args, {
     for (const { key, reason } of plan.excluded.filter((entry) => entry.reason === 'unsupported-extension')) {
       progress.log(`SKIPPED ${reason}: ${key}`);
     }
+    for (const failure of plan.warnings.find(({ id }) => id === 'malformed-audit-records')?.items || []) {
+      progress.log(`SKIPPED malformed-audit-record: ${failure.key}:${failure.line}: ${failure.error}`);
+    }
     const apiToken = await progress.run('Obtaining DA auth token (not logged)', tokenProvider);
     const configOptions = {
       scope, daConfigToken: apiToken, configToken: apiToken, onProgress: progress.onProgress,

@@ -55,6 +55,12 @@ describe('classifyHlx6', () => {
       { kind: 'version', docId: '01M3VP8ZE44TMDMRTE5AZZFS1F', versionId: '01M3VY15VYNZ2YGDDAE49Y5Z5Z' },
     );
   });
+  it('classifies active and timestamp-named archived audit segments separately from versions and content', () => {
+    assert.deepEqual(classifyHlx6('/.versions/doc/audit/audit.jsonl'), { kind: 'audit', docId: 'doc' });
+    assert.deepEqual(classifyHlx6('/.versions/doc/audit/0001790864951605-01ABC_def-GHI.jsonl'), { kind: 'audit', docId: 'doc' });
+    assert.equal(classifyHlx6('/audit.jsonl').kind, 'media');
+    assert.equal(classifyHlx6('/.versions/doc/audit/other.jsonl').kind, 'media');
+  });
   it('classifies trashed objects with their original kind', () => {
     assert.deepEqual(classifyHlx6('/.trash/to-be-deleted.html'), { kind: 'trash', path: '/to-be-deleted.html', trashedKind: 'doc' });
     assert.deepEqual(classifyHlx6('/.trash/old/.props'), { kind: 'trash', path: '/old/.props', trashedKind: 'folder' });

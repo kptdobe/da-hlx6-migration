@@ -38,7 +38,7 @@ to the **hlx6** backend (helix-api-service, AWS S3 "source bus").
 
 4. Freeze DA edits, then execute with a fresh source snapshot using `--refresh-source -x`. Keep the freeze in place through verification and cutover.
 
-5. Dump the migrated HLX6 target and compare it with the DA snapshot. Confirm the expected content, versions, and media before changing the site's source URL.
+5. Dump the migrated HLX6 target and compare it with the DA snapshot. Confirm the expected content, versions, audit history, and media before changing the site's source URL.
 
 	```bash
 	node bin/dump.js -b hlx6 <org>/<hlx6-site>
@@ -150,6 +150,31 @@ Image uploads follow the target site's API keep rules. Failed image fetches or
 uploads preserve their original URLs and are reported individually as warnings;
 successful uploads are rewritten. Progress and reports retain completed write
 and image counts if a later operation fails.
+
+### Audit history
+
+DA's active `.da-versions/{id}/audit.txt` and archived `audit-*.txt` files
+migrate to gzip-compressed JSONL under `.versions/{doc-id}/audit/`.
+The active file becomes `audit.jsonl`; archive names use their first valid
+activity's zero-padded timestamp and deterministic ID. Archive boundaries are
+preserved, including histories without a current document.
+
+The conversion targets the storage schema proposed in
+[adobe/helix-api-service#556](https://github.com/adobe/helix-api-service/pull/556)
+and [adobe/helix-audit-logger#595](https://github.com/adobe/helix-audit-logger/pull/595).
+Confirm compatible reader/logger changes are deployed before cutover.
+Edit sessions remain edits, not fabricated versions. Original timestamps,
+all actor emails (lowercased), paths and labels are retained; saved-version
+events link to migrated version IDs. Missing or unsupported snapshots produce
+warnings and retain the event without a snapshot link.
+
+Malformed records do not block migration: valid records in the same file still
+migrate. Each skip is logged with its source key, 1-based line number and reason.
+The owner-only report's `malformed-audit-records` warning also contains the raw
+line for further analysis; the source snapshot retains the original files.
+Treat these diagnostics as confidential site data. Unavailable source objects
+still fail normally. Dump/compare reports count active and archived audit
+records on both backends; subtract reported skipped records from DA totals.
 
 ## Experimental browser UI
 

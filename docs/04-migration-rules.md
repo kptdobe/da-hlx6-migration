@@ -37,7 +37,7 @@ The migration writes these metadata keys **now**, so no second pass is needed on
 | R5 | `{o}/{s}/.trash/{name}` | `{o}/{s}/.trash/{name}` (keep the dated name) | per R1-R4 | common + `doc-path` = `/` + `sitePath(path)` | `doc-id` kept from the same da `id`, so its versions stay attached |
 | R6 | `.da-versions/{id}/{vid}.{ext}` | `{o}/{s}/.versions/{docId(id)}/{versionUlid}` (no extension) | preserve raw body; text may be gzip-encoded, binary media remains uncompressed | §4 | |
 | R7 | `.da-versions/{id}/` with no live or trash doc | same as R6 (orphan versions) | | §4 | hlx6 behaves the same after the trash is emptied |
-| R8 | `.da-versions/{id}/audit*.txt` | not written to the source bus | - | - | used as input for §4; raw files archived with the migration manifest. **Review**: acceptable to drop edit-only events from the UI? |
+| R8 | `.da-versions/{id}/audit*.txt` | `{o}/{s}/.versions/{docId(id)}/audit/{segment}.jsonl` | TSV to JSONL v1, gzip, `application/x-ndjson` | `doc-id`, `da-id`, `uncompressed-length` | active + archives, including orphan histories; see §4.1 |
 | R9 | `<img src>`, `<source srcset>` in html | - | use API target keep rules; upload other image URLs including DA content URLs; rewrite successes to `./media_{hash}.{ext}`; keep failures unchanged | - | errors and source-page references logged; migration continues (§8) |
 | R10 | `.da/**` | ordinary path mapping under `{o}/{s}/.da/` | per R1-R4 | common | no folder-specific exception or exclusion |
 | R11 | `.da/comments/**` | ordinary path mapping per R10 | JSON per R2 | common | data copied; no comment-ID reattachment or comment UI support |
@@ -76,6 +76,41 @@ da facts (from the sample):
 
 `version-operation` is not set; da has no equivalent.
 
+### 4.1 Audit history
+
+Target contract:
+[adobe/helix-api-service#556](https://github.com/adobe/helix-api-service/pull/556)
+and [adobe/helix-audit-logger#595](https://github.com/adobe/helix-audit-logger/pull/595).
+Compatible reader/logger deployments are required before cutover.
+
+Each DA file becomes one segment, ordered oldest first, without a 500-record
+read limit. `audit.txt` becomes `audit/audit.jsonl`; archives become
+`audit/{firstTimestamp16}-{firstActivityId}.jsonl`, using the first valid event.
+Empty segments are retained; empty archives use time zero and a deterministic
+file identity. Document IDs match current, trashed and orphan version objects.
+
+| JSONL key | Value |
+|---|---|
+| `v` | `1` |
+| `id` | deterministic ULID from the event timestamp, source key, record index and parsed event |
+| `t` | original DA timestamp in Unix milliseconds |
+| `op` | `version` if a version ID or label exists; otherwise `edit` (no inferred create/copy/trash) |
+| `u` | all DA actor emails, lowercased; empty array if no actors were recorded |
+| `p` | original site-relative path, stripping a legacy leading site segment if present |
+| `label` | non-empty DA version label |
+| `snapshot` | migrated version ULID, only if that snapshot is part of the migration plan |
+
+DA does not retain the beginning of a collapsed edit session, so no `t0` is
+invented. Three-column edit rows, legacy four-column rows (version ID only)
+and five-column rows (label + version ID) are supported.
+
+Malformed records are skipped individually, not blockers. The private report's
+`malformed-audit-records` warning records the source key, 1-based line number,
+raw line, error and `skipped-record` action. Progress logs omit the raw line.
+The source snapshot retains the original files. Missing source bodies still
+block migration. Events referencing missing/unsupported snapshots are retained
+without `snapshot` and reported as `audit-snapshots-not-migrated`.
+
 ## 5. Pre-flight checks
 Implemented in `bin/preflight.js`.
 
@@ -86,18 +121,21 @@ Implemented in `bin/preflight.js`.
 | Filename renames | not performed; compatibility report field has count zero |
 | Version folders without a live or trashed doc (migrated as orphans, R7) | warning |
 | File property sidecars with no mapping | warning |
+| Malformed audit records (full validation only) | warning; log original records for analysis and skip them |
+| Audit snapshots not migrated (full validation only) | warning; retain events without snapshot links |
 
 ## 6. Execution invariants
 - Pre-flight first. A blocking check stops the run unless explicitly acknowledged.
 - Dry-run by default; `-x` writes.
-- Write order per document: versions first, then the current object.
+- Write order: versions first, then audit segments, then current objects.
 - Conditional writes (`IfNoneMatch: *`). Existing identical objects (same `da-id` / `da-version-id`) count as done, so runs are resumable and idempotent.
-- The manifest (JSONL) records `daKey → hlx6Key, docId, status`, plus the archived audit files.
+- The source snapshot retains raw audit files; the migration report maps source keys to planned target keys and records write statuses and skipped audit records.
 
 ## 7. Verification
 - Counts per kind: da current + trash = hlx6 current + trash; da versions = hlx6 versions
 - Body equality per object after gunzip (html: after image-URL normalization)
 - Per doc: version count and ULID order match the audit order
+- Audit record counts include active and archived segments on both sides; HLX6 totals equal DA totals minus malformed records reported as skipped
 - Sample preview through `api.aem.live` for N random documents
 - Every `./media_{hash}` referenced by a migrated page exists in `helix-media-bus/{hlx6-content-bus-id}/`
 

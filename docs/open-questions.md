@@ -113,21 +113,21 @@ The selected mechanism is `content.fixedContentBusId`; see the [main migration f
 
 ## 3. Edit history without a saved version
 
-**Problem.** da keeps an edit log per document (`.da-versions/{id}/audit.txt`): one line per editing session (same user within 30 min), plus one line per saved version. hlx6 has no edit log; its history only contains versions.
+**Resolved by the proposed activity log.** da keeps an edit log per document
+(`.da-versions/{id}/audit.txt` and archives): editing sessions plus saved-version
+events. [adobe/helix-api-service#556](https://github.com/adobe/helix-api-service/pull/556)
+and [adobe/helix-audit-logger#595](https://github.com/adobe/helix-audit-logger/pull/595)
+provide a target JSONL activity log separate from restorable versions.
 
-Saved versions migrate one to one. **Editing sessions that did not create a version have nowhere to go.**
+The migration converts active and archived files into this format. Edit-only
+events stay edits, saved-version events reference migrated snapshots, and all
+recorded actors and timestamps are retained. Malformed records are logged with
+their original lines in the private report and skipped, without blocking valid
+history or content. Missing snapshots produce warnings and no dangling links.
+Raw source files remain in the snapshot for analysis.
 
-**Why it matters.** The da.live history panel shows those sessions ("who edited, when"); after migration they disappear.
-
-**Options**
-
-| | Approach | Pros | Cons |
-|---|---|---|---|
-| A | Drop them from the UI, archive the raw `audit*.txt` files with the migration record | Simple; nothing lost for audit purposes | Not visible to authors anymore |
-| B | Turn each session into an hlx6 version | Visible | Wrong: there is no snapshot of the content at that time, so these "versions" can't be restored |
-| C | Add an edit log to hlx6 | Same behaviour as da | New hlx6 feature |
-
-**Rec.** A.
+**Deployment dependency.** Confirm compatible history reader and logger changes
+are deployed before cutover. See [migration rules §4.1](04-migration-rules.md#41-audit-history).
 
 ---
 

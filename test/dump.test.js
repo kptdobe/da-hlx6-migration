@@ -113,6 +113,19 @@ describe('scanSite', () => {
     assert.deepEqual(entries.map((e) => [e.kind, e.body.toString()]), [['version', '<main>v</main>'], ['folder', '{}']]);
     assert.equal(entries[0].contentEncoding, 'gzip');
   });
+  it('downloads and classifies active and archived HLX6 audit logs as decompressed history', async () => {
+    const body = '{"v":1,"id":"event","t":1000,"op":"edit","u":[],"p":"/index.html"}\n';
+    const entries = await scanSite({
+      client: fakeClient({
+        'org/site/.versions/doc/audit/audit.jsonl': { body, gzip: true, contentType: 'application/x-ndjson' },
+        'org/site/.versions/doc/audit/0000000000001000-event.jsonl': { body, gzip: true, contentType: 'application/x-ndjson' },
+      }),
+      backend: 'hlx6', bucket: 'helix-source-bus', org: 'org', site: 'site',
+    });
+    assert.equal(entries.length, 2);
+    assert.ok(entries.every((entry) => entry.kind === 'audit' && entry.docId === 'doc'
+      && entry.contentEncoding === 'gzip' && entry.body.toString() === body));
+  });
 });
 
 describe('writeDump / readDump', () => {

@@ -41,7 +41,9 @@ export function classifyDa(rel) {
  * @param {string} rel key relative to the site, e.g. `/folder/.props`
  */
 export function classifyHlx6(rel) {
-  let m = rel.match(/^\/\.versions\/([^/]+)\/([^/]+)$/);
+  let m = rel.match(/^\/\.versions\/([^/]+)\/audit\/(audit|\d{16}-[a-zA-Z0-9_-]+)\.jsonl$/);
+  if (m) return { kind: 'audit', docId: m[1] };
+  m = rel.match(/^\/\.versions\/([^/]+)\/([^/]+)$/);
   if (m) return { kind: 'version', docId: m[1], versionId: m[2] };
   if (rel.startsWith('/.trash/')) {
     const inner = rel.slice('/.trash'.length);

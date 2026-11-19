@@ -82,6 +82,18 @@ describe('auditByDoc', () => {
     ]);
     assert.deepEqual(res, { U1: 3 });
   });
+  it('reports both backends, including archives, without counting audit segments as versions or current content', () => {
+    const report = compareDumps([
+      da('/.da-versions/U1/audit.txt', { body: '1\t[]\t/index.html\n' }),
+      da('/.da-versions/U1/audit-1.txt', { body: '0\t[]\t/index.html\n' }),
+    ], [
+      hx('/.versions/D1/audit/audit.jsonl', { body: '{"t":1}\n' }),
+      hx('/.versions/D1/audit/0000000000000000-entry.jsonl', { body: '{"t":0}\n' }),
+    ]);
+    assert.deepEqual(report.audit, { da: { U1: 2 }, hlx6: { D1: 2 } });
+    assert.deepEqual(report.versions, { da: {}, hlx6: {} });
+    assert.deepEqual(report.current, { matched: [], onlyDa: [], onlyHlx6: [] });
+  });
 });
 
 describe('compareDumps', () => {

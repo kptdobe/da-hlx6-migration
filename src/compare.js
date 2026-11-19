@@ -110,7 +110,7 @@ export function versionsByDoc(backend, entries) {
 }
 
 /**
- * Counts audit lines per da document id.
+ * Counts active and archived audit lines per document id on either backend.
  */
 export function auditByDoc(entries) {
   const out = {};
@@ -161,7 +161,7 @@ export function compareDumps(da, hlx6) {
     current: { matched, onlyDa, onlyHlx6 },
     metadata: { da: metadataShapes(da), hlx6: metadataShapes(hlx6) },
     versions: { da: versionsByDoc('da', da), hlx6: versionsByDoc('hlx6', hlx6) },
-    audit: { da: auditByDoc(da) },
+    audit: { da: auditByDoc(da), hlx6: auditByDoc(hlx6) },
     trash: {
       da: da.filter((e) => e.kind === 'trash').map((e) => ({ path: e.path, docPath: e.metadata?.path })),
       hlx6: hlx6.filter((e) => e.kind === 'trash').map((e) => ({ path: e.path, docPath: e.metadata?.['doc-path'] })),

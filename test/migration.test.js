@@ -23,6 +23,7 @@ describe('parseAudit', () => {
     assert.deepEqual(result, [{
       timestamp: 1790864951605,
       user: 'a@example.com',
+      users: ['a@example.com'],
       path: '/index.html',
       label: 'Published',
       versionId: '123e4567-e89b-12d3-a456-426614174000',
@@ -30,6 +31,19 @@ describe('parseAudit', () => {
   });
   it('returns anonymous for malformed user JSON', () => {
     assert.equal(firstEmail('invalid'), 'anonymous');
+  });
+  it('reads legacy three/four-column rows and preserves every actor and version ID', () => {
+    const result = parseAudit(Buffer.from([
+      '1000\t[{"email":"Alice@Example.com"},{"email":"bob@example.com"}]\tsample-content-da/Old Name.html',
+      '2000\t[]\t/Old Name.html\tlegacy-version\r',
+      '3000\t[]\t/New Name.html\tPublished\tnew-version',
+      '',
+    ].join('\n')));
+    assert.deepEqual(result.map(({ users, label, versionId }) => ({ users, label, versionId })), [
+      { users: ['alice@example.com', 'bob@example.com'], label: '', versionId: '' },
+      { users: [], label: '', versionId: 'legacy-version' },
+      { users: [], label: 'Published', versionId: 'new-version' },
+    ]);
   });
 });
 
@@ -153,7 +167,153 @@ describe('buildMigrationPlan', () => {
     assert.equal(version.key, `kptdobe/sample-content-hlx6-migrated/.versions/${doc.metadata['doc-id']}/${version.versionUlid}`);
     assert.equal(version.metadata['version-by'], 'author@example.com');
     assert.equal(version.metadata['version-comment'], 'Published');
-    assert.equal(plan.excluded.some((item) => item.kind === 'audit'), true);
+    const history = bySource[audit.key];
+    assert.equal(history.key, `kptdobe/sample-content-hlx6-migrated/.versions/${doc.docId}/audit/audit.jsonl`);
+    const activity = JSON.parse(history.body.toString());
+    assert.equal(activity.snapshot, version.versionUlid);
+    assert.equal(activity.op, 'version');
+    assert.equal(plan.excluded.some((item) => item.kind === 'audit'), false);
+  });
+
+  it('migrates active and archived audit segments without truncating history or changing IDs on reruns', () => {
+    const archived = Array.from({ length: 500 }, (_, index) => (
+      `${1000 + index}\t[{"email":"Alice@Example.com"},{"email":"bob@example.com"}]\tsample-content-da/Old Name.html\t\t`
+    )).join('\n');
+    const rows = [
+      entry('/New Name.html', '<main>new</main>', { id: 'doc-id', timestamp: '4000' }),
+      entry('/.da-versions/doc-id/audit.txt', '3000\t[]\t/New Name.html\tPublished\tv1\n'),
+      entry('/.da-versions/doc-id/audit-1499.txt', `${archived}\n`),
+      entry('/.da-versions/doc-id/audit-2000.txt', '2000\t[]\t/Old Name.html\n'),
+      entry('/.da-versions/doc-id/v1.html', '<main>old</main>', { timestamp: '2500' }),
+    ];
+    const plan = buildMigrationPlan(rows, scope);
+    const document = plan.objects.find(({ kind }) => kind === 'doc');
+    const version = plan.objects.find(({ kind }) => kind === 'version');
+    const histories = plan.objects.filter(({ kind }) => kind === 'audit');
+    assert.equal(histories.length, 3);
+    assert.equal(plan.excluded.length, 0);
+    const prefix = `kptdobe/sample-content-hlx6-migrated/.versions/${document.docId}/audit/`;
+    const archives = histories.filter(({ key }) => !key.endsWith('/audit.jsonl'))
+      .sort((a, b) => a.key.localeCompare(b.key));
+    assert.match(archives[0].key.slice(prefix.length), /^0000000000001000-[A-Z0-9]+\.jsonl$/);
+    assert.match(archives[1].key.slice(prefix.length), /^0000000000002000-[A-Z0-9]+\.jsonl$/);
+    const activities = histories.flatMap(({ body }) => body.toString().trim().split('\n').map((line) => JSON.parse(line)));
+    assert.equal(activities.length, 502);
+    assert.equal(new Set(activities.map(({ id }) => id)).size, 502);
+    const first = JSON.parse(archives[0].body.toString().split('\n')[0]);
+    assert.deepEqual(first, {
+      v: 1, id: first.id, t: 1000, op: 'edit',
+      u: ['alice@example.com', 'bob@example.com'], p: '/Old Name.html',
+    });
+    const active = histories.find(({ key }) => key.endsWith('/audit.jsonl'));
+    const saved = JSON.parse(active.body.toString());
+    assert.equal(saved.snapshot, version.versionUlid);
+    assert.equal(saved.label, 'Published');
+    assert.equal(saved.t, 3000);
+    assert.deepEqual(saved.u, []);
+    assert.equal(saved.p, '/New Name.html');
+    for (const history of histories) {
+      assert.equal(history.docId, document.docId);
+      assert.equal(history.contentType, 'application/x-ndjson');
+      assert.equal(history.contentEncoding, 'gzip');
+      assert.equal(history.metadata['da-id'], 'doc-id');
+      assert.equal(Number(history.metadata['uncompressed-length']), history.body.length);
+      assert.ok(history.body.toString().endsWith('\n'));
+    }
+    const repeated = buildMigrationPlan([...rows].reverse(), scope);
+    for (const history of histories) {
+      assert.deepEqual(repeated.objects.find(({ key }) => key === history.key), history);
+    }
+    assert.equal(repeated.objects.find(({ kind }) => kind === 'doc').docId, document.docId);
+  });
+
+  it('keeps audit-only histories and attaches orphan/trash history to the migrated document identity', () => {
+    const plan = buildMigrationPlan([
+      entry('/.trash/gone.html', '<main/>', { id: 'trash' }),
+      entry('/.da-versions/trash/audit.txt', '2000\t[]\t/gone.html\n'),
+      entry('/.da-versions/orphan/v1.html', '<main/>'),
+      entry('/.da-versions/orphan/audit-3000.txt', '3000\t[]\t/orphan.html\tv1\n'),
+      entry('/.da-versions/audit-only/audit.txt', '4000\t[]\t/purged.html\n'),
+    ], scope);
+    const objects = new Map(plan.objects.map((object) => [object.sourceKey, object]));
+    const get = (rel) => objects.get(`kptdobe/sample-content-da${rel}`);
+    assert.equal(get('/.da-versions/trash/audit.txt').docId, get('/.trash/gone.html').docId);
+    const history = get('/.da-versions/orphan/audit-3000.txt');
+    const version = get('/.da-versions/orphan/v1.html');
+    assert.equal(history.docId, version.docId);
+    assert.equal(JSON.parse(history.body.toString()).snapshot, version.versionUlid);
+    assert.equal(JSON.parse(get('/.da-versions/audit-only/audit.txt').body.toString()).op, 'edit');
+    assert.equal(plan.objects.filter(({ kind }) => kind === 'version').length, 1);
+  });
+
+  it('retains events whose snapshots are missing or unsupported and reports the omitted links', () => {
+    const audit = entry('/.da-versions/id/audit.txt', [
+      '0\t[]\t/index.html\tAvailable\tv0',
+      '1000\t[]\t/index.html\tMissing\tmissing',
+      '2000\t[]\t/index.html\tUnsupported\tv2',
+    ].join('\n'));
+    const plan = buildMigrationPlan([
+      audit,
+      entry('/.da-versions/id/v0.html', '<main/>', { timestamp: '500' }),
+      entry('/.da-versions/id/v2.txt', 'unsupported'),
+    ], scope);
+    const activities = plan.objects.find(({ kind }) => kind === 'audit')
+      .body.toString().trim().split('\n').map((line) => JSON.parse(line));
+    assert.ok(activities[0].snapshot.startsWith('0000000000'));
+    assert.ok(activities.every(({ op }) => op === 'version'));
+    assert.deepEqual(activities.slice(1).map(({ snapshot, label }) => ({ snapshot, label })), [
+      { snapshot: undefined, label: 'Missing' }, { snapshot: undefined, label: 'Unsupported' },
+    ]);
+    assert.deepEqual(plan.warnings.find(({ id }) => id === 'audit-snapshots-not-migrated'), {
+      id: 'audit-snapshots-not-migrated', severity: 'warning',
+      description: 'Audit events retained without snapshot links because their versions were not migrated',
+      count: 2,
+      items: ['missing', 'v2'].map((versionId) => ({ key: audit.key, versionId, action: 'omitted-snapshot' })),
+    });
+  });
+
+  it('preserves empty segments and rejects unavailable audit bodies', () => {
+    const empty = buildMigrationPlan([
+      entry('/.da-versions/id/audit.txt', ''), entry('/.da-versions/id/audit-1000.txt', ''),
+    ], scope).objects;
+    assert.equal(empty.length, 2);
+    assert.ok(empty.every(({ body }) => body.length === 0));
+    assert.equal(new Set(empty.map(({ key }) => key)).size, 2);
+    const missing = entry('/.da-versions/id/audit.txt', '');
+    delete missing.body;
+    assert.throws(() => buildMigrationPlan([missing], scope), /Missing DA audit body/);
+  });
+
+  it('skips malformed audit records individually and records original lines and locations for analysis', () => {
+    const invalid = [
+      'not-a-row', 'bad\t[]\t/index.html', '\t[]\t/index.html',
+      '1000\tinvalid\t/index.html', '1000\t{}\t/index.html',
+      '1000\t[{}]\t/index.html', '1000\t[]\t', '1000\t[]\t/.versions/a.html',
+    ];
+    const audit = entry('/.da-versions/id/audit.txt', [
+      '1000\t[]\t/index.html', '', ...invalid, '2000\t[]\t/index.html\tPublished\tv1',
+    ].join('\n'));
+    const plan = buildMigrationPlan([
+      audit, entry('/.da-versions/id/v1.html', '<main/>'),
+      entry('/.da-versions/id/audit-500.txt', 'broken archive row\n500\t[]\t/old.html\n'),
+    ], scope);
+    const activities = plan.objects.find(({ sourceKey }) => sourceKey === audit.key)
+      .body.toString().trim().split('\n').map((line) => JSON.parse(line));
+    assert.deepEqual(activities.map(({ t, op }) => ({ t, op })), [
+      { t: 1000, op: 'edit' }, { t: 2000, op: 'version' },
+    ]);
+    assert.equal(activities[1].snapshot, plan.objects.find(({ kind }) => kind === 'version').versionUlid);
+    const warning = plan.warnings.find(({ id }) => id === 'malformed-audit-records');
+    assert.equal(warning.severity, 'warning');
+    assert.equal(warning.count, invalid.length + 1);
+    assert.deepEqual(warning.items.slice(0, -1).map(({ key, line, record, action }) => ({ key, line, record, action })),
+      invalid.map((record, index) => ({ key: audit.key, line: index + 3, record, action: 'skipped-record' })));
+    assert.ok(warning.items.every(({ error }) => typeof error === 'string' && error));
+    assert.equal(warning.items.at(-1).line, 1);
+    assert.equal(warning.items.at(-1).key.endsWith('/audit-500.txt'), true);
+    const allInvalid = buildMigrationPlan([entry('/.da-versions/id/audit.txt', 'bad\n')], scope);
+    assert.equal(allInvalid.objects[0].body.length, 0);
+    assert.equal(allInvalid.warnings.find(({ id }) => id === 'malformed-audit-records').count, 1);
   });
 
   it('migrates .da content and comment files through the ordinary content path', () => {

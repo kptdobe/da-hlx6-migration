@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
 import { inspectDestination, runMigration } from '../src/migration-runner.js';
+import { buildMigrationPlan } from '../src/migration.js';
+import { classifyDa } from '../src/classify.js';
 
 const scope = { org: 'kptdobe', daSite: 'sample-content-da', hlx6Site: 'sample-content-hlx6-migrated' };
 const object = {
@@ -82,6 +84,49 @@ describe('inspectDestination', () => {
 });
 
 describe('runMigration', () => {
+  it('writes converted active/archive logs after snapshots and supports ownership checks on reruns', async () => {
+    const rows = [
+      ['/index.html', '<main>current</main>', { id: 'doc-id' }],
+      ['/.da-versions/doc-id/v1.html', '<main>saved</main>', {}],
+      ['/.da-versions/doc-id/audit-1000.txt', '1000\t[]\t/index.html\n', {}],
+      ['/.da-versions/doc-id/audit.txt', 'invalid row\n2000\t[]\t/index.html\tPublished\tv1\n', {}],
+    ].map(([rel, body, metadata]) => ({
+      key: `kptdobe/sample-content-da${rel}`, rel, ...classifyDa(rel), body: Buffer.from(body), metadata,
+    }));
+    const plan = buildMigrationPlan(rows, scope);
+    const client = fakeClient();
+    const options = {
+      client,
+      scope: { ...scope, write: [{ bucket: 'helix-source-bus', prefix: 'kptdobe/sample-content-hlx6-migrated/' }] },
+    };
+    const dryRun = await runMigration(plan, options);
+    assert.equal(dryRun.objects, 4);
+    assert.equal(client.writes.length, 0);
+    const result = await runMigration(plan, { ...options, execute: true });
+    assert.equal(result.results.length, 4);
+    assert.deepEqual(client.writes.map(({ Key }) => plan.objects.find(({ key }) => key === Key).kind),
+      ['version', 'audit', 'audit', 'doc']);
+    const histories = client.writes.filter(({ ContentType }) => ContentType === 'application/x-ndjson');
+    assert.equal(histories.length, 2);
+    for (const history of histories) {
+      assert.equal(history.ContentEncoding, 'gzip');
+      assert.equal(history.IfNoneMatch, '*');
+      const body = gunzipSync(history.Body);
+      assert.equal(body.length, Number(history.Metadata['uncompressed-length']));
+      assert.equal(history.Metadata['da-id'], 'doc-id');
+      assert.equal(history.Metadata['da-source-sha256'], createHash('sha256').update(body).digest('hex'));
+    }
+    const activity = JSON.parse(gunzipSync(histories.find(({ Key }) => Key.endsWith('/audit.jsonl')).Body));
+    assert.equal(activity.snapshot, client.writes[0].Key.split('/').at(-1));
+    const keys = client.writes.map(({ Key }) => Key);
+    const heads = Object.fromEntries(client.writes.map(({ Key, Metadata }) => [Key, Metadata]));
+    const statuses = await inspectDestination(fakeClient(keys, heads), scope, plan.objects);
+    assert.ok([...statuses.values()].every((status) => status === 'exists'));
+    const changed = plan.objects.map((object) => (object.kind === 'audit'
+      ? { ...object, body: Buffer.from('changed') } : object));
+    await assert.rejects(inspectDestination(fakeClient(keys, heads), scope, changed), /not an identical migration object/);
+  });
+
   it('overwrites existing planned content only when explicitly requested', async () => {
     const client = fakeClient([object.key], { [object.key]: { 'da-id': 'other' } });
     const result = await runMigration({ objects: [object] }, {

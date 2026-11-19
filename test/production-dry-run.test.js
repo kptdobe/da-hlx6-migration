@@ -7,6 +7,58 @@ import path from 'node:path';
 import { readOnlyClient, readOnlyFetch } from '../src/production-dry-run.js';
 import { migrateCli } from '../src/migration-cli.js';
 import { fakeClient } from './fixtures/fake-client.js';
+import { scanSite } from '../src/dump.js';
+
+it('logs skipped audit records and persists their original lines in the private full-validation report', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'migration-audit-'));
+  const dump = path.join(directory, 'dump');
+  const envFile = path.join(directory, 'env');
+  const out = path.join(directory, 'report.json');
+  const key = 'source-org/source-site/.da-versions/id/audit.txt';
+  const invalid = 'not-a-timestamp\t[{"email":"author@example.com"}]\t/private.html';
+  const messages = [];
+  try {
+    await fs.writeFile(envFile, '');
+    await scanSite({
+      client: fakeClient({
+        'source-org/source-site/index.html': { body: '<main/>', metadata: { id: 'id' } },
+        [key]: { body: `1000\t[]\t/index.html\n${invalid}\n2000\t[]\t/index.html\n` },
+        'source-org/source-site/.da-versions/id/audit-500.txt': { body: '500\t[]\t/old.html\n' },
+      }),
+      backend: 'da', bucket: 'aem-content', org: 'source-org', site: 'source-site', outDir: dump,
+    });
+    const hlx = fakeClient({
+      'orgs/source-org/sites/source-site.json': { body: '{"content":{}}' },
+      'orgs/target-org/sites/target-site.json': { body: '{"content":{}}' },
+    });
+    const report = await migrateCli([
+      'source-org/source-site', 'target-org/target-site', '--full-validation',
+      '--source-dump', dump, '-e', envFile, '-o', out,
+    ], {
+      createReadClient: () => hlx,
+      createWriteClient: () => { throw new Error('Dry run must not create a writer'); },
+      tokenProvider: () => 'test-token',
+      fetchImpl: async () => ({ status: 404 }),
+      progress: {
+        summary() {}, log(message) { messages.push(message); }, onProgress() {}, close() {},
+        async run(label, operation) { return operation(); },
+      },
+    });
+    assert.deepEqual(report.blockers, []);
+    assert.equal(report.plannedObjects.filter(({ kind }) => kind === 'audit').length, 2);
+    const warning = report.warnings.find(({ id }) => id === 'malformed-audit-records');
+    assert.deepEqual(warning.items, [{
+      key, line: 2, record: invalid, error: 'invalid timestamp', action: 'skipped-record',
+    }]);
+    assert.ok(messages.some((message) => message === `SKIPPED malformed-audit-record: ${key}:2: invalid timestamp`));
+    assert.ok(messages.every((message) => !message.includes(invalid)));
+    const saved = JSON.parse(await fs.readFile(out, 'utf8'));
+    assert.deepEqual(saved.warnings, report.warnings);
+    assert.equal((await fs.stat(out)).mode & 0o777, 0o600);
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
 
 it('requires a fresh source for execution on any site pair', () => {
   for (const flag of ['-x', '--execute']) {

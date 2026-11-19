@@ -33,6 +33,7 @@ it('filters by boundaries, folder markers, IDs and orphan hints, not stale manif
     entry('/drafts/esp-stage/b.json', { id: 'stage' }),
     entry('/.da-versions/ignored/old.html', { path: 'source/previous.html' }),
     entry('/.da-versions/ignored/audit.txt'),
+    entry('/.da-versions/ignored/audit-1000.txt'),
     entry('/.da-versions/stage/v.json'),
     entry('/.da-versions/orphan/v.html', { path: 'source/drafts/esp-dev/deleted.html' }),
     entry('/drafts/esp-dev-other/keep.html'),
@@ -45,7 +46,7 @@ it('filters by boundaries, folder markers, IDs and orphan hints, not stale manif
     readMetadata: () => { throw new Error('Manifest metadata must be reused'); },
   });
   assert.deepEqual(selected, entries.slice(-3));
-  assert.equal(excluded.length, 8);
+  assert.equal(excluded.length, 9);
   assert.ok(excluded.every(({ reason }) => reason === 'ignored-folder'));
   assert.strictEqual(await selectMigrationEntries(entries, { source, ignoredFolders: [] }), entries);
 });

@@ -34,14 +34,49 @@ function isoTimestamp(value) {
     : undefined;
 }
 
-export function parseAudit(body) {
-  return body.toString('utf8').split('\n').filter(Boolean).map((line) => {
-    const [timestamp, users, path, label = '', versionId = ''] = line.split('\t');
-    const parsedTimestamp = Number(timestamp);
-    if (!Number.isFinite(parsedTimestamp)) return null;
+export function parseAudit(body, sourceKey = 'audit log', onInvalid = (failure) => {
+  console.warn(`SKIPPED malformed-audit-record: ${failure.key}:${failure.line}: ${failure.error}`);
+}) {
+  return body.toString('utf8').split('\n').map((line, index) => {
+    if (!line.trim()) return null;
+    const invalid = (error) => {
+      onInvalid({ key: sourceKey, line: index + 1, record: line, error, action: 'skipped-record' });
+      return null;
+    };
+    const parts = line.replace(/\r$/, '').split('\t');
+    if (parts.length < 3) return invalid('expected timestamp, users and path');
+    let label = '';
+    let versionId = '';
+    if (parts.length >= 5) {
+      versionId = parts.pop();
+      label = parts.pop();
+    } else if (parts.length === 4) {
+      versionId = parts.pop();
+    }
+    const [timestamp, rawUsers] = parts;
+    const path = parts.slice(2).join('\t');
+    const parsedTimestamp = timestamp.trim() ? Number(timestamp) : NaN;
+    if (!Number.isSafeInteger(parsedTimestamp) || parsedTimestamp < 0
+      || parsedTimestamp > 281474976710655) return invalid('invalid timestamp');
+    const normalizedPath = path.startsWith('/') ? path : sitePath(path);
+    if (!path || !normalizedPath.startsWith('/') || normalizedPath.endsWith('/')
+      || normalizedPath.split('/').some((part) => ['.', '..', '.versions', '.history'].includes(part))) {
+      return invalid('invalid document path');
+    }
+    let users;
+    try {
+      users = JSON.parse(rawUsers);
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      return invalid('invalid users JSON');
+    }
+    if (!Array.isArray(users) || users.some((user) => typeof user?.email !== 'string' || !user.email)) {
+      return invalid('expected an array of users with email addresses');
+    }
     return {
       timestamp: parsedTimestamp,
       user: firstEmail(users),
+      users: users.map(({ email }) => email.toLowerCase()),
       path,
       label,
       versionId,
@@ -59,23 +94,28 @@ function sitePath(value, fallback = '/') {
 function getAuditIndex(entries) {
   const byDoc = new Map();
   const byVersion = new Map();
-  entries.filter((entry) => entry.kind === 'audit' && entry.body).forEach((entry) => {
-    const events = parseAudit(entry.body);
-    byDoc.set(entry.docId, [...(byDoc.get(entry.docId) || []), ...events]);
+  const bySource = new Map();
+  const invalidRecords = [];
+  entries.filter((entry) => entry.kind === 'audit').forEach((entry) => {
+    if (!entry.body) throw new Error(`Missing DA audit body: ${entry.key}`);
+    const events = parseAudit(entry.body, entry.key, (failure) => invalidRecords.push(failure));
+    bySource.set(entry.key, events);
+    const docEvents = byDoc.get(entry.docId) || [];
+    events.forEach((event) => docEvents.push(event));
+    byDoc.set(entry.docId, docEvents);
     events.filter((event) => event.versionId).forEach((event) => {
       byVersion.set(`${entry.docId}/${event.versionId}`, event);
     });
   });
-  return { byDoc, byVersion };
+  return { byDoc, byVersion, bySource, invalidRecords };
 }
 
 function buildDocId(entry, auditIndex) {
   const id = entry.metadata?.id || entry.key;
   const events = auditIndex.byDoc.get(id) || [];
   const fallback = Number(entry.metadata?.timestamp) || 0;
-  const timestamp = events.length
-    ? Math.min(...events.map((event) => event.timestamp))
-    : fallback;
+  const timestamp = events.reduce((earliest, event) => Math.min(earliest, event.timestamp),
+    events.length ? Infinity : fallback);
   return deterministicUlid(timestamp, `da-id:${id}`);
 }
 
@@ -150,7 +190,7 @@ function makeVersionPlan(entry, scope, auditIndex, docIdByDaId) {
   const daId = entry.docId;
   const docId = docIdByDaId.get(daId) || deterministicUlid(0, `da-id:${daId}`);
   const audit = auditIndex.byVersion.get(`${daId}/${versionId}`);
-  const timestamp = audit?.timestamp || Number(entry.metadata?.timestamp) || 0;
+  const timestamp = audit?.timestamp ?? (Number(entry.metadata?.timestamp) || 0);
   const versionUlid = deterministicUlid(timestamp, `da-version-id:${versionId}`);
   const hintedPath = sitePath(entry.metadata?.path);
   const ext = splitExt(entry.key.split('/').at(-1)).ext.toLowerCase();
@@ -178,6 +218,41 @@ function makeVersionPlan(entry, scope, auditIndex, docIdByDaId) {
     daId,
     versionId,
     versionUlid,
+  };
+}
+
+function makeAuditPlan(entry, scope, auditIndex, docIdByDaId, versions, missingSnapshots) {
+  const docId = docIdByDaId.get(entry.docId);
+  const activities = auditIndex.bySource.get(entry.key).map((event, index) => {
+    const snapshot = event.versionId ? versions.get(`${entry.docId}/${event.versionId}`) : undefined;
+    if (event.versionId && !snapshot) {
+      missingSnapshots.push({ key: entry.key, versionId: event.versionId, action: 'omitted-snapshot' });
+    }
+    return {
+      v: 1,
+      id: deterministicUlid(event.timestamp, JSON.stringify(['da-audit', entry.key, index, event])),
+      t: event.timestamp,
+      op: event.versionId || event.label ? 'version' : 'edit',
+      u: event.users,
+      p: toHlx6Path(event.path.startsWith('/') ? event.path : sitePath(event.path)),
+      ...(event.label && { label: event.label }),
+      ...(snapshot && { snapshot }),
+    };
+  }).sort((a, b) => a.t - b.t || a.id.localeCompare(b.id));
+  const first = activities[0] || { t: 0, id: deterministicUlid(0, `da-audit-file:${entry.key}`) };
+  const name = entry.key.endsWith('/audit.txt')
+    ? 'audit.jsonl' : `${String(first.t).padStart(16, '0')}-${first.id}.jsonl`;
+  const body = Buffer.from(activities.map((activity) => `${JSON.stringify(activity)}\n`).join(''), 'utf8');
+  return {
+    kind: 'audit',
+    sourceKey: entry.key,
+    key: `${scope.org}/${scope.hlx6Site}/.versions/${docId}/audit/${name}`,
+    body,
+    contentType: 'application/x-ndjson',
+    contentEncoding: 'gzip',
+    metadata: { 'doc-id': docId, 'da-id': entry.docId, 'uncompressed-length': String(body.length) },
+    docId,
+    daId: entry.docId,
   };
 }
 
@@ -214,19 +289,36 @@ export function buildMigrationPlan(entries, scope) {
     .forEach((entry) => objects.push(makeFolderPlan(entry, scope, auditIndex)));
   entries.filter((entry) => entry.kind === 'version')
     .forEach((entry) => objects.push(makeVersionPlan(entry, scope, auditIndex, docIdByDaId)));
+  const versions = new Map(objects.filter((object) => object.kind === 'version' && object.contentType)
+    .map((object) => [`${object.daId}/${object.versionId}`, object.versionUlid]));
+  const missingSnapshots = [];
+  entries.filter((entry) => entry.kind === 'audit')
+    .forEach((entry) => objects.push(makeAuditPlan(entry, scope, auditIndex, docIdByDaId, versions, missingSnapshots)));
 
   const unsupported = objects.filter((object) => object.contentType === undefined);
   return {
     scope: { org: scope.org, daSite: scope.daSite, hlx6Site: scope.hlx6Site },
     objects: objects.filter((object) => object.contentType !== undefined),
     excluded: [
-      ...entries.filter((entry) => ['audit', 'props-sidecar'].includes(entry.kind))
+      ...entries.filter((entry) => entry.kind === 'props-sidecar')
         .map((entry) => ({ key: entry.key, kind: entry.kind })),
       ...unsupported.map((object) => ({
         key: object.sourceKey, kind: object.kind, reason: 'unsupported-extension',
       })),
     ],
-    warnings: checks.checks.filter((check) => check.severity === 'warning' && check.count),
+    warnings: [
+      ...checks.checks.filter((check) => check.severity === 'warning' && check.count),
+      ...(auditIndex.invalidRecords.length ? [{
+        id: 'malformed-audit-records', severity: 'warning',
+        description: 'Malformed DA audit records were skipped; see items for original lines',
+        count: auditIndex.invalidRecords.length, items: auditIndex.invalidRecords,
+      }] : []),
+      ...(missingSnapshots.length ? [{
+        id: 'audit-snapshots-not-migrated', severity: 'warning',
+        description: 'Audit events retained without snapshot links because their versions were not migrated',
+        count: missingSnapshots.length, items: missingSnapshots,
+      }] : []),
+    ],
   };
 }
 

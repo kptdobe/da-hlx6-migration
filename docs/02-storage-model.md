@@ -39,8 +39,8 @@ Everything in this document must be confirmed on real data in Phase 3 (see [03](
 | Created how | PutObject of the *previous* body | Server-side **CopyObject** of the current doc (gzip preserved) |
 | Version metadata | `users`, `timestamp`, `path`, `label` | `doc-path-hint`, `doc-last-modified` (ISO), `doc-last-modified-by` (renamed from `last-modified-by`), `version-by`, `version-comment`, `version-operation`, plus the copied `doc-id` and `uncompressed-length` |
 | Version date shown in UI | `timestamp` metadata | `version-date` = **S3 LastModified of the version object**, which is not settable |
-| Audit / edit log | `.da-versions/{fileId}/audit.txt` (TSV: `timestamp users path versionLabel versionId`). Same-user edits within 30 min are collapsed; max 500 lines, then archived to `audit-{ts}.txt` | **None**. Every hlx6 record is a restorable version (`da-live/blocks/shared/version/helpers.js`) |
-| Listing | `GET /versionlist` reads the audit lines | `GET .../.versions` lists the prefix and HEADs every object |
+| Audit / edit log | `.da-versions/{fileId}/audit.txt` (TSV: `timestamp users path versionLabel versionId`). Same-user edits within 30 min are collapsed; max 500 lines, then archived to `audit-{ts}.txt` | Proposed in [adobe/helix-api-service#556](https://github.com/adobe/helix-api-service/pull/556) and [adobe/helix-audit-logger#595](https://github.com/adobe/helix-audit-logger/pull/595): gzip JSONL v1 in `.versions/{doc-id}/audit/audit.jsonl`, with `{firstTimestamp16}-{firstActivityId}.jsonl` archives |
+| Listing | `GET /versionlist` reads the audit lines | `GET .../.versions` lists snapshots; proposed `GET .../.history` reads the newest 500 audit activities, with a truncation flag |
 | Media versions | No (html/json only) | Any type can be versioned (copy) |
 
 ## 4. Delete, move, copy
@@ -68,9 +68,9 @@ Everything in this document must be confirmed on real data in Phase 3 (see [03](
 
 ## 7. Side effects of API writes (Q3: does a direct S3 write skip anything?)
 
-**hlx6 `/source` handlers** (`src/source/*`): **no non-S3 side effects**. There are no SQS, SNS, EventBridge, DynamoDB, audit-batch, index or purge calls in the write paths.
+**hlx6 `/source` handlers** (`src/source/*`): the proposed activity-history changes enrich existing audit messages with document facts; the audit logger writes per-document JSONL asynchronously. Direct migration writes bypass this mechanism, so the migration converts DA audit files itself rather than replaying mutations.
 - Preview reads the source bus lazily (`contentproxy/source/sourcebus.js`) and interns images at preview time.
-- **Conclusion:** writing directly to `helix-source-bus` is equivalent to source API writes only if we reproduce object metadata (`doc-id`, `last-modified-by`, `uncompressed-length`), `.props` markers and version metadata. Do not gzip binary media. Image ingestion should use the media API (including its validation and storage bookkeeping).
+- **Conclusion:** direct source-bus migration must reproduce object metadata (`doc-id`, `last-modified-by`, `uncompressed-length`), `.props` markers, version metadata and document audit segments. Do not gzip binary media. Image ingestion should use the media API (including its validation and storage bookkeeping).
 
 **da-admin**: the only side effect is the `notifyCollab` call on delete and update. It is irrelevant for migration reads.
 
@@ -79,7 +79,7 @@ Everything in this document must be confirmed on real data in Phase 3 (see [03](
    - The current document `LastModified` and the version `version-date` are S3 system values, so they become the migration time.
    - The original values can only be carried in metadata (`doc-last-modified`, plus a proposed `x-migrated-*`).
    - The UI shows `version-date` first, so a client or API change is needed to display original dates. **Decision needed.**
-2. **Audit-only entries** (da edits without a version snapshot) have no hlx6 equivalent. **Decision needed:** drop them, store them as an archived sidecar, or convert them.
+2. **Audit-only entries** migrate to the proposed hlx6 activity log as edits, without fabricated snapshots. Dates, actors, paths and labels are preserved; DA did not retain the beginning of collapsed sessions. Malformed records are logged and skipped. Compatible history reader/logger changes must be deployed before cutover.
 3. **IDs**: da UUID `id`/`version` vs hlx6 ULID `doc-id`/version. A ULID can encode the original timestamp (`ulid(seedTime)`), which preserves ordering.
 4. **Paths**: migration writes reuse existing source names verbatim, without lowercasing, accent removal, percent decoding, or punctuation replacement. Distinct source names stay distinct; only actual duplicate target paths block as collisions. Folder markers such as `.drafts.props` still map to `.drafts/.props`, and versions and trash retain their required backend layouts. Target API naming requirements are separate from direct storage-key mapping and require compatibility validation for unusual names.
 5. **Unsupported extensions** in da (anything outside the 10 types) cannot be stored in hlx6.
