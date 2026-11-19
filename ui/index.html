@@ -3,66 +3,145 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>DA to HLX6 | Migration preparation</title>
+    <meta name="color-scheme" content="light">
+    <title>DA to HLX6 | Migration workspace</title>
     <link rel="stylesheet" href="/style.css">
     <script type="module" src="/app.js"></script>
   </head>
   <body>
-    <main>
-      <header>
-        <span class="badge">Experimental &middot; Local only</span>
-        <h1>Prepare your migration</h1>
-        <p>Inspect site configuration and inventory before moving from DA to HLX6. No remote writes.</p>
-      </header>
-      <div id="activity" class="activity" data-state="running" role="status" aria-live="polite" aria-atomic="true">
-        <span id="activity-spinner" class="spinner" aria-hidden="true"></span>
-        <div>
-          <strong id="activity-title">Checking activity...</strong>
-          <p id="status">Retrieving the current preparation status.</p>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="Migration workspace home"><span class="brand-mark" aria-hidden="true">H6</span> Migration workspace</a>
+      <span class="local-badge"><span aria-hidden="true"></span> Local session <span class="experimental">/ Experimental</span></span>
+    </header>
+    <div class="workspace">
+      <aside class="sidebar">
+        <p class="eyebrow">DA <span aria-hidden="true">&rarr;</span> HLX6</p>
+        <h2>Your migration plan</h2>
+        <p class="sidebar-intro">One step at a time.<br>Nothing changes until you're ready.</p>
+        <nav aria-label="Migration steps">
+          <ol class="steps">
+            <li><button type="button" data-step="1" aria-current="step"><span class="step-number">1</span><span><strong>Sign in</strong><small>Connect your accounts</small></span><span class="step-status"></span></button></li>
+            <li><button type="button" data-step="2" disabled><span class="step-number">2</span><span><strong>Select a site</strong><small>Source and destination</small></span><span class="step-status"></span></button></li>
+            <li><button type="button" data-step="3" disabled><span class="step-number">3</span><span><strong>First-pass analysis</strong><small>Understand the starting point</small></span><span class="step-status"></span></button></li>
+            <li><button type="button" data-step="4" disabled><span class="step-number">4</span><span><strong>Full dry run</strong><small>Validate the migration plan</small></span><span class="step-status"></span></button></li>
+            <li><button type="button" data-step="5" disabled><span class="step-number">5</span><span><strong>Review report</strong><small>Know what would change</small></span><span class="step-status"></span></button></li>
+          </ol>
+        </nav>
+        <div class="future-steps">
+          <p class="eyebrow">Coming in a later phase</p>
+          <p><span aria-hidden="true">6</span> Run content migration <small>Not available yet</small></p>
+          <p><span aria-hidden="true">7</span> Switch to HLX6 <small>Not available yet</small></p>
         </div>
-      </div>
-      <section class="panel" aria-label="DA authentication">
-        <h2>DA authentication</h2>
-        <p id="auth-message" role="status" aria-live="polite">Checking authentication status...</p>
-        <p id="auth-error" role="alert" hidden></p>
-        <button id="sign-in" type="button">Sign in with DA</button>
-        <p class="hint">Sign-in opens Adobe login in your browser. Return here when finished, then prepare the migration.</p>
-      </section>
-      <section class="panel" aria-label="AWS authentication">
-        <h2>AWS / KLAM authentication</h2>
-        <p id="aws-auth-message" role="status" aria-live="polite">Checking AWS authentication status...</p>
-        <p id="aws-auth-error" role="alert" hidden></p>
-        <button id="aws-sign-in" type="button">Sign in with AWS / KLAM</button>
-        <p class="hint">Opens AWS browser login. Select your KLAM operator console session; sign into KLAM first if needed. No credential copying required. Requires AWS CLI 2.32+ and local-development sign-in permission on the operator role.</p>
-      </section>
-      <section class="panel">
-        <h2>Site selection</h2>
-        <form id="prepare-form">
-          <fieldset id="inputs">
-            <div class="fields">
-              <label>Organization <input name="org" required pattern="[a-z0-9][a-z0-9\-]{0,62}" placeholder="cat-digital-platform" autocomplete="off"></label>
-              <label>Site <input name="site" required pattern="[a-z0-9][a-z0-9\-]{0,62}" placeholder="catdealer" autocomplete="off"></label>
+        <div class="safety-note"><span class="safety-icon" aria-hidden="true">&#10003;</span><div><strong>Read-only by design</strong><p>No remote writes, uploads or configuration changes in this workflow.</p></div></div>
+      </aside>
+      <main id="main">
+        <div class="page-heading">
+          <p id="step-label" class="eyebrow">Step 01 / 05</p>
+          <h1 id="page-title" tabindex="-1">Connect your accounts</h1>
+          <p id="page-description" class="description">Sign in to inspect your sites and prepare a safe migration from DA to HLX6.</p>
+        </div>
+        <div id="site-context" class="site-context" hidden aria-label="Selected migration">
+          <div><small>DA source</small><strong id="context-source"></strong></div><span class="context-arrow" aria-hidden="true">&rarr;</span><div><small>HLX6 destination</small><strong id="context-target"></strong></div><span class="pill">Read-only</span>
+        </div>
+        <div id="activity" class="activity" data-state="running" role="status" aria-live="polite" aria-atomic="true">
+          <span id="activity-spinner" class="spinner" aria-hidden="true"></span>
+          <div><strong id="activity-title">Connecting to your local workspace</strong><p id="status">Checking authentication and any active preparation.</p></div>
+        </div>
+        <div id="error" class="notice error" role="alert" hidden></div>
+        <button id="reconnect" type="button" class="secondary" hidden>Reconnect to local server</button>
+
+        <section data-panel="1" aria-label="Sign in">
+          <div class="auth-grid">
+            <article class="panel auth-card">
+              <div class="card-heading"><span class="service-icon da-icon" aria-hidden="true">DA</span><span id="auth-badge" class="pill">Not connected</span></div>
+              <h2>DA / Adobe</h2><p class="hint">Access site configuration and source content with your Adobe account.</p>
+              <p id="auth-message" class="auth-message" role="status">Checking authentication...</p>
+              <p id="auth-error" class="notice error" role="alert" hidden></p>
+              <button id="sign-in" type="button">Sign in with DA</button>
+            </article>
+            <article class="panel auth-card">
+              <div class="card-heading"><span class="service-icon aws-icon" aria-hidden="true">AWS</span><span id="aws-auth-badge" class="pill">Not connected</span></div>
+              <h2>AWS / KLAM</h2><p class="hint">Use your operator session to inspect the HLX6 destination. No keys to copy.</p>
+              <p id="aws-auth-message" class="auth-message" role="status">Checking authentication...</p>
+              <p id="aws-auth-error" class="notice error" role="alert" hidden></p>
+              <button id="aws-sign-in" type="button">Sign in with AWS / KLAM</button>
+            </article>
+          </div>
+          <details class="help"><summary>About sign-in and permissions</summary><p>Each sign-in opens a browser window. Finish there and return here. For AWS, select your KLAM operator console session; sign into KLAM first if needed. AWS CLI 2.32+ and local-development sign-in permission are required. Site and storage permissions are checked during analysis. Read-only R2 credentials must be configured on the local server.</p></details>
+          <div class="step-footer"><p id="auth-hint" class="hint">Connect both accounts to continue.</p><button id="auth-continue" type="button" disabled>Select a site <span aria-hidden="true">&rarr;</span></button></div>
+        </section>
+
+        <section data-panel="2" hidden aria-label="Site selection">
+          <form id="prepare-form">
+            <fieldset id="inputs">
+              <div class="panel">
+                <div class="section-heading"><span class="section-index">01</span><div><h2>Where is your content?</h2><p class="hint">Enter the DA organization and site / repository name.</p></div></div>
+                <div class="fields">
+                  <label>Organization<input name="org" required pattern="[a-z0-9][a-z0-9\-]{0,62}" placeholder="your-organization" autocomplete="off"></label>
+                  <label>Site / repository<input name="site" required pattern="[a-z0-9][a-z0-9\-]{0,62}" placeholder="your-site" autocomplete="off"></label>
+                </div>
+                <label class="option"><input id="different-target" type="checkbox"> Use a different HLX6 destination</label>
+                <p id="same-target-hint" class="hint">The destination uses the same organization and site name on HLX6.</p>
+                <div id="target-fields" class="fields" hidden>
+                  <label>Destination organization<input name="targetOrg" disabled required pattern="[a-z0-9][a-z0-9\-]{0,62}" autocomplete="off"></label>
+                  <label>Destination site / repository<input name="targetSite" disabled required pattern="[a-z0-9][a-z0-9\-]{0,62}" autocomplete="off"></label>
+                </div>
+              </div>
+              <details class="panel options"><summary>Scope options <span class="hint">Optional folder exclusions</span></summary>
+                <label>Ignore folders (one site path per line)<textarea name="ignoredFolders" rows="3" placeholder="/drafts/esp-dev&#10;/drafts/esp-stage"></textarea></label>
+                <p class="hint">Exclude these folders and their history. Live inventory may need metadata requests to resolve versions. Excluded content is never downloaded.</p>
+              </details>
+              <p id="selection-notice" class="notice" role="status" hidden></p>
+              <div class="step-footer"><button type="button" class="secondary" data-go="1">Back</button><button id="prepare-button" type="submit">Analyze site <span aria-hidden="true">&rarr;</span></button></div>
+            </fieldset>
+          </form>
+        </section>
+
+        <section data-panel="3" hidden aria-label="First-pass analysis">
+          <div id="analysis-loading" class="panel working-panel" hidden>
+            <span class="working-symbol" aria-hidden="true">01</span><h2>Getting the lay of the land</h2><p>Loading site configurations, listing source and destination objects, and checking paths.</p>
+            <progress data-progress-bar aria-label="Current analysis operation progress"></progress>
+            <div class="progress-meta"><span data-progress-count>Waiting for progress...</span><span data-progress-elapsed>Elapsed 0s</span></div>
+            <p data-progress-updated class="hint">Connected to the local server.</p>
+            <p class="hint">No source content bodies are downloaded. Folder exclusions may require metadata reads.</p>
+          </div>
+          <div id="analysis-results" hidden>
+            <div class="panel"><div class="section-heading"><span id="analysis-symbol" class="section-index" aria-hidden="true">&#10003;</span><div><h2 id="analysis-title">Your first-pass analysis</h2><p class="hint">A lighter inventory check, not a migration-readiness guarantee.</p></div></div>
+              <div id="analysis-metrics" class="metrics"></div>
+              <div id="analysis-findings"></div>
             </div>
-            <label class="option"><input id="different-target" type="checkbox"> Use a different destination</label>
-            <div id="target-fields" class="fields" hidden>
-              <label>Destination organization <input name="targetOrg" disabled required pattern="[a-z0-9][a-z0-9\-]{0,62}" autocomplete="off"></label>
-              <label>Destination site <input name="targetSite" disabled required pattern="[a-z0-9][a-z0-9\-]{0,62}" autocomplete="off"></label>
-            </div>
-            <label>Ignore folders (one site path per line)
-              <textarea name="ignoredFolders" rows="3" placeholder="/drafts/esp-dev&#10;/drafts/esp-stage"></textarea>
-            </label>
-            <p class="hint">Skips these folders and their file history. Live inventory needs metadata requests to resolve versions, but never downloads excluded bodies.</p>
-            <label class="option"><input name="fullValidation" type="checkbox"> Full validation (downloads source content to a private local snapshot)</label>
-            <p class="hint">Default: listing-only inventory. DA and AWS browser sign-in open when needed. R2 credentials are loaded by the local server.</p>
-            <button id="prepare-button" type="submit">Prepare Migration</button>
-          </fieldset>
-        </form>
-        <p id="selection-notice" class="notice" role="status" hidden></p>
-      </section>
-      <p id="error" role="alert" hidden></p>
-      <section id="migration-state" class="panel" hidden aria-label="Migration state"></section>
-      <section id="configs" hidden aria-label="Site configurations"></section>
-      <section id="report" class="panel" hidden aria-label="Dry-run report"></section>
-    </main>
+            <section id="migration-state" class="panel" aria-label="Migration state"></section>
+            <details class="panel"><summary>Site configurations <span class="hint">Technical details</span></summary><div id="configs"></div></details>
+          </div>
+          <div id="analysis-failed" class="panel" hidden><h2>Analysis could not finish</h2><p>Review the error above. Check your accounts or site selection, then retry.</p></div>
+          <div id="analysis-footer" class="step-footer" hidden><button type="button" class="secondary" data-go="2">Edit site selection</button><div class="actions"><button id="retry-analysis" type="button" class="secondary">Run analysis again</button><button id="analysis-continue" type="button">Continue to dry run <span aria-hidden="true">&rarr;</span></button></div></div>
+        </section>
+
+        <section data-panel="4" hidden aria-label="Full dry run">
+          <div id="dry-run-intro" class="panel">
+            <p class="eyebrow">A deeper check. Still read-only.</p><h2>Rehearse the migration, without making it</h2>
+            <p>Full validation builds the migration plan and checks it against the destination.</p>
+            <ul class="check-list"><li>Download selected source content into a private local snapshot</li><li>Validate content, version history and destination ownership</li><li>Check project configuration and identify image upload candidates</li></ul>
+            <div class="notice"><strong>This can take a while for large sites.</strong><p>It reads all selected source objects and uses local disk space. Keep the local server running. You can reload this page to reconnect.</p></div>
+            <p class="hint">No remote content writes, image uploads or configuration changes. Snapshots and reports contain confidential site data and must be removed manually when no longer needed.</p>
+          </div>
+          <div id="dry-run-progress" class="panel working-panel" hidden>
+            <span class="working-symbol" aria-hidden="true">02</span><h2>Validating your migration plan</h2><p id="progress-phase">Starting full validation...</p>
+            <progress id="run-progress" data-progress-bar aria-label="Current operation progress"></progress>
+            <div class="progress-meta"><span id="progress-count" data-progress-count>Waiting for progress...</span><span id="progress-elapsed" data-progress-elapsed>Elapsed 0s</span></div>
+            <p id="progress-updated" data-progress-updated class="hint">Connected to the local server.</p>
+            <p class="hint">Progress is for the current operation, not an estimated overall percentage. Remote writes remain disabled.</p>
+          </div>
+          <div id="dry-run-footer" class="step-footer"><button type="button" class="secondary" data-go="3">Back to analysis</button><button id="run-dry-run" type="button">Start full dry run <span aria-hidden="true">&rarr;</span></button></div>
+        </section>
+
+        <section data-panel="5" hidden aria-label="Dry-run report">
+          <div id="report"></div>
+          <div class="panel next-phase"><span class="pill">Future phase</span><h2>From preparation to migration</h2><p>Running the content migration and switching the site's content configuration to HLX6 are not available in this UI yet. This report does not freeze source content or authorize a cutover.</p></div>
+          <div class="step-footer"><button type="button" class="secondary" data-go="2">Edit site selection</button><div class="actions"><button type="button" class="secondary" data-go="3">Review first analysis</button><button id="rerun-dry-run" type="button">Run a new dry run</button></div></div>
+        </section>
+        <footer class="workspace-footer"><span>DA to HLX6 migration</span><span>Preparation only &middot; Your source stays unchanged</span></footer>
+      </main>
+    </div>
   </body>
 </html>

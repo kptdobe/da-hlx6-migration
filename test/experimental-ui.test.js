@@ -287,6 +287,100 @@ it('loads separate source/destination configs and explicitly opts into full vali
   assert.ok(!invocation.includes('--overwrite'));
 });
 
+it('retains the matching first-pass analysis across full validation and retries, but not scope changes', async (t) => {
+  const invocations = [];
+  const { post, get, finished } = await start(t, {
+    runDryRun: async (args) => {
+      invocations.push(args);
+      if (invocations.length === 2) throw new Error('Source download failed');
+      return {
+        ...reportFor(...args.slice(-2)),
+        validation: args.includes('--full-validation') ? 'full' : 'inventory',
+      };
+    },
+  });
+  const selection = { source: 'source/site', target: 'target/site', ignoredFolders: ['/drafts'] };
+  await post(selection);
+  const first = await finished();
+  assert.equal(first.report.validation, 'inventory');
+  assert.equal(invocations.length, 1);
+  assert.ok(!invocations[0].includes('--full-validation'));
+
+  await post({ ...selection, fullValidation: true });
+  const failed = await finished();
+  assert.equal(failed.status, 'failed');
+  assert.deepEqual(failed.analysisReport, first.report);
+  assert.deepEqual((await get()).analysisReport, first.report);
+
+  await post({ ...selection, fullValidation: true });
+  const retried = await finished();
+  assert.equal(retried.report.validation, 'full');
+  assert.deepEqual(retried.analysisReport, first.report);
+  assert.ok(invocations.slice(1).every((args) => args.includes('--full-validation')
+    && args.includes('--dry-run') && !args.includes('--execute') && !args.includes('--overwrite')));
+
+  for (const changed of [{ target: 'other/site' }, { ignoredFolders: ['/other'] }]) {
+    await post({ ...selection, ...changed, fullValidation: true });
+    assert.equal((await finished()).analysisReport, undefined);
+  }
+});
+
+it('exposes operation counters and timestamps while running, without passing arbitrary progress fields', async (t) => {
+  let finishRun;
+  const { post, get, finished } = await start(t, {
+    runDryRun: (args, { progress }) => {
+      progress.onProgress({
+        phase: 'Downloading source', completed: 3, total: 10, bytes: 2048,
+        shardsCompleted: 1, shardsTotal: 4, pages: 2,
+        key: 'not-needed-for-progress', token: 'private-progress-field',
+      });
+      return new Promise((resolve) => {
+        finishRun = () => resolve(reportFor(...args.slice(-2)));
+      });
+    },
+  });
+  await post({ source: 'org/site', fullValidation: true });
+  const running = await get();
+  assert.equal(running.status, 'running');
+  assert.deepEqual(running.progress, {
+    phase: 'Downloading source', completed: 3, total: 10, bytes: 2048,
+    shardsCompleted: 1, shardsTotal: 4, pages: 2,
+  });
+  assert.ok(Number.isFinite(Date.parse(running.startedAt)));
+  assert.ok(Date.parse(running.updatedAt) >= Date.parse(running.startedAt));
+  assert.equal(running.finishedAt, undefined);
+  assert.doesNotMatch(JSON.stringify(running), /private-progress-field|not-needed-for-progress/);
+  finishRun();
+  const done = await finished();
+  assert.ok(Date.parse(done.finishedAt) >= Date.parse(done.startedAt));
+  assert.deepEqual(done.progress, { phase: 'Preparation complete' });
+});
+
+it('retains first-pass counts and findings without repeating per-object inventories during dry-run polling', async (t) => {
+  const { post, finished } = await start(t, {
+    runDryRun: async (args) => ({
+      ...reportFor(...args.slice(-2)),
+      sourceObjects: 500,
+      sourceBytes: 1024,
+      inventory: { source: [{ key: 'org/site/private-object' }], target: [] },
+      preflight: { checks: [{ items: ['private-object'] }] },
+      warnings: [{ id: 'target-exists', description: 'Target has content', count: 2, items: ['private-target-key'] }],
+    }),
+  });
+  await post({ source: 'org/site', ignoredFolders: ['/drafts', '/scratch'] });
+  await finished();
+  await post({ source: 'org/site', fullValidation: true, ignoredFolders: ['/scratch/', '/drafts'] });
+  const job = await finished();
+  assert.equal(job.analysisReport.sourceObjects, 500);
+  assert.equal(job.analysisReport.sourceBytes, 1024);
+  assert.deepEqual(job.analysisReport.warnings, [
+    { id: 'target-exists', description: 'Target has content', count: 2 },
+  ]);
+  assert.equal(job.analysisReport.inventory, undefined);
+  assert.equal(job.analysisReport.preflight, undefined);
+  assert.doesNotMatch(JSON.stringify(job.analysisReport), /private-object|private-target-key/);
+});
+
 it('rejects invalid inputs and execution-related options without authenticating', async (t) => {
   let authenticated = false;
   const { post } = await start(t, {

@@ -43,6 +43,23 @@ async function readInput(request) {
   };
 }
 
+function summarizeAnalysis(report) {
+  const summary = {};
+  for (const key of [
+    'source', 'target', 'dryRun', 'validation', 'startedAt', 'finishedAt',
+    'sourceObjects', 'targetObjects', 'targetFiles', 'sourceBytes', 'targetBytes',
+    'sourceSummary', 'targetSummary', 'sourceContentBusId', 'targetContentBusId',
+    'sourceConfigWarning', 'blockers', 'skippedChecks', 'ignoredFolders',
+  ]) {
+    if (report[key] !== undefined) summary[key] = report[key];
+  }
+  // Keep the first pass available without retransmitting its per-object inventories on every poll.
+  summary.warnings = report.warnings.map((warning) => typeof warning === 'string' ? warning
+    : Object.fromEntries(['id', 'description', 'reason', 'count', 'severity']
+      .filter((key) => warning[key] !== undefined).map((key) => [key, warning[key]])));
+  return summary;
+}
+
 export function createExperimentalUiServer({
   envFile = '.dev.vars',
   tokenProvider = ({ browserLogin = false } = {}) => getValidToken({
@@ -54,7 +71,7 @@ export function createExperimentalUiServer({
   awsAuth = createAwsAuth(),
 } = {}) {
   let job = null;
-  let auth = { status: 'unknown', message: 'DA authentication has not been checked. Sign in or prepare to authenticate.' };
+  let auth = { status: 'unknown', message: 'Sign in to connect your Adobe account.' };
   let useBrowserAuth = false;
 
   async function authenticate(forceLogin = false) {
@@ -66,7 +83,7 @@ export function createExperimentalUiServer({
       }
       const token = await tokenProvider({ browserLogin: useBrowserAuth });
       if (typeof token !== 'string' || !token.trim()) throw new Error('DA authentication returned no token');
-      auth = { status: 'authenticated', message: 'DA sign-in completed. Site permissions are checked when preparing.' };
+      auth = { status: 'authenticated', message: 'DA sign-in completed. Site permissions are checked during analysis.' };
       return token;
     } catch (error) {
       auth = { status: 'failed', message: 'DA sign-in failed. You can try again.', error: error.message };
@@ -75,7 +92,11 @@ export function createExperimentalUiServer({
   }
 
   async function prepare(current) {
-    const update = (phase) => { current.phase = phase; };
+    const update = (phase, counters = {}) => {
+      current.phase = phase;
+      current.progress = { phase, ...counters };
+      current.updatedAt = new Date().toISOString();
+    };
     try {
       update('Authenticating with DA; complete browser sign-in if prompted');
       const token = await authenticate();
@@ -104,7 +125,11 @@ export function createExperimentalUiServer({
         summary: (message) => update(message),
         log: (message) => update(message),
         onProgress: (event) => {
-          update(`${event.phase}${event.total === undefined ? '' : ` (${event.completed ?? 0}/${event.total})`}`);
+          const counters = {};
+          for (const key of ['completed', 'total', 'bytes', 'shardsCompleted', 'shardsTotal', 'pages']) {
+            if (Number.isFinite(event[key]) && event[key] >= 0) counters[key] = event[key];
+          }
+          update(event.phase ?? event.status ?? 'Working', counters);
         },
         async run(phase, action) {
           update(phase);
@@ -125,6 +150,8 @@ export function createExperimentalUiServer({
       current.status = 'failed';
       current.error = error.message;
       update('Preparation failed');
+    } finally {
+      current.finishedAt = new Date().toISOString();
     }
   }
 
@@ -183,7 +210,16 @@ export function createExperimentalUiServer({
           send(response, 409, { error: 'Authentication or preparation is already running' });
           return;
         }
-        job = { ...input, status: 'running', phase: 'Starting preparation', configs: {} };
+        const sameSelection = job && input.source === job.source && input.target === job.target
+          && JSON.stringify(input.ignoredFolders.toSorted()) === JSON.stringify(job.ignoredFolders.toSorted());
+        const analysisReport = input.fullValidation && sameSelection
+          ? (job.fullValidation ? job.analysisReport : job.report && summarizeAnalysis(job.report)) : undefined;
+        const startedAt = new Date().toISOString();
+        job = {
+          ...input, status: 'running', phase: 'Starting preparation', configs: {},
+          startedAt, updatedAt: startedAt,
+          ...(analysisReport && { analysisReport }),
+        };
         send(response, 202, job);
         void prepare(job);
       } else if (request.method === 'GET' && ASSETS.has(request.url)) {

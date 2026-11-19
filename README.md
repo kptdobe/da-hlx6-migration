@@ -140,7 +140,7 @@ copied credentials for the running UI session. SDK credential refresh reuses
 the browser session until reauthentication is required.
 
 The UI's **Sign in with AWS / KLAM** button starts login without running a
-migration; **Prepare Migration** authenticates automatically when needed.
+migration; analysis and validation recheck authentication when needed.
 Only authentication status and actionable errors reach the browser, never AWS
 keys or session tokens. Network and storage authorization failures are not
 silently treated as expired sessions. AWS and DA sign-in remain separate.
@@ -245,18 +245,38 @@ npm run ui
 
 Open the printed loopback-only `http://127.0.0.1:3000` URL; do not expose or proxy
 the server. It uses the same authentication helper and storage clients as the migration CLI.
-Enter the source organization/site, optionally choose a different destination,
-and enter ignored site folders one per line. Site selection and ignored folders
-are saved in browser local storage. Tokens, configs, reports and the full-validation
-option are not stored there.
+The guided workspace has five steps, with only the current step on screen:
 
-**Prepare Migration** authenticates with `da-auth-helper` or `DA_CONFIG_TOKEN`,
-loads aggregated site configs, and runs an inventory dry-run. **Full validation**
-opts into source downloads and body-dependent checks. The UI never executes
-remote writes. **Sign in with DA** starts a fresh Adobe browser login;
-**Sign in with AWS / KLAM** starts AWS browser login using your KLAM console
-session. Preparation obtains AWS authentication on demand. Authentication/config errors and progress
-are shown explicitly. One preparation runs at a time; the active job and last
-report remain available on reload until the server stops or another preparation
-starts. Configs and reports can contain sensitive site settings, so do not share
-the UI or leave the server running unnecessarily.
+1. **Sign in** to DA / Adobe and AWS / KLAM. Both accounts must be connected
+   before starting analysis. Each button starts a fresh browser sign-in.
+2. **Select a site** using the source organization and site / repository name.
+   Optionally choose a different destination and enter ignored folders, one per line.
+3. **First-pass analysis** loads aggregated site configurations and runs the
+   listing-based inventory and path checks. It does not download source bodies;
+   folder exclusions may require metadata requests. Review blockers, warnings,
+   destination occupancy and content-bus preservation before continuing.
+   This first pass does not establish migration readiness.
+4. **Full dry run** requires an explicit **Start full dry run** action. It downloads
+   selected source content into a private local snapshot, builds the migration
+   plan and checks destination ownership, project configuration and image
+   candidates. Large sites can take a long time and use substantial local disk.
+   Live progress shows the current operation's counts, not a guessed overall percentage.
+5. **Review report** summarizes planned object actions, image candidates,
+   configuration changes, blockers and warnings. Inventory, configuration and
+   JSON details remain available without cluttering the main view.
+
+The UI never executes remote writes, uploads images or changes site configuration.
+Running the content migration and switching the content source to HLX6 are future
+steps, not enabled actions. Resolve blockers and review warnings before any real
+migration; a dry run neither freezes the source nor authorizes cutover.
+
+Completed steps can be revisited when idle. Changing site selection or exclusions
+invalidates the displayed analysis. Site selection and ignored folders are saved
+in browser local storage; tokens, configurations and reports are not.
+One preparation runs at a time. Reloading reconnects to an active job or the latest
+matching report until the server stops or another preparation starts. Full
+validation retains the matching first-pass summary for review, including after a
+failed dry run. Lost connections require reconnecting before another action.
+Snapshots and JSON reports remain on disk and must be removed manually when no
+longer needed. Configurations, snapshots and reports can contain confidential site
+data: do not share the UI or leave the server running unnecessarily.
