@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import { getValidToken, clearStoredToken } from 'da-auth-helper';
 import { migrateCli } from './migration-cli.js';
 import { normalizeIgnoredFolders } from './migration-selection.js';
+import { createAwsAuth } from './aws-auth.js';
 
 const SITE = /^[a-z0-9][a-z0-9-]{0,62}\/[a-z0-9][a-z0-9-]{0,62}$/;
 const ASSETS = new Map([
@@ -50,6 +51,7 @@ export function createExperimentalUiServer({
   clearToken = clearStoredToken,
   fetchImpl = fetch,
   runDryRun = migrateCli,
+  awsAuth = createAwsAuth(),
 } = {}) {
   let job = null;
   let auth = { status: 'unknown', message: 'DA authentication has not been checked. Sign in or prepare to authenticate.' };
@@ -115,7 +117,7 @@ export function createExperimentalUiServer({
         ...(current.fullValidation ? ['--full-validation'] : []),
         ...current.ignoredFolders.flatMap((folder) => ['--ignore-folder', folder]),
         current.source, current.target,
-      ], { tokenProvider: () => token, fetchImpl, progress });
+      ], { tokenProvider: () => token, fetchImpl, progress, awsAuth });
       if (!current.report || current.report.dryRun !== true) throw new Error('Expected a read-only dry-run report');
       current.status = current.report.blockers.length ? 'blocked' : 'complete';
       update(current.status === 'blocked' ? 'Dry-run has blockers' : 'Preparation complete');
@@ -125,6 +127,9 @@ export function createExperimentalUiServer({
       update('Preparation failed');
     }
   }
+
+  const busy = () => job?.status === 'running' || auth.status === 'signing-in'
+    || awsAuth.getStatus().status === 'signing-in';
 
   return createServer(async (request, response) => {
     // Reject DNS rebinding and cross-origin browser access to local credentials.
@@ -144,10 +149,20 @@ export function createExperimentalUiServer({
         send(response, 403, { error: 'A same-origin JSON request is required' });
         return;
       }
-      if (request.url === '/api/auth' && request.method === 'GET') {
+      if (request.url === '/api/aws-auth' && request.method === 'GET') {
+        send(response, 200, awsAuth.getStatus());
+      } else if (request.url === '/api/aws-auth' && request.method === 'POST') {
+        if (busy()) {
+          send(response, 409, { error: 'Authentication or preparation is already running' });
+          return;
+        }
+        const signingIn = awsAuth.signIn();
+        send(response, 202, awsAuth.getStatus());
+        void signingIn.catch((error) => console.error(`AWS sign-in failed: ${error.message}`));
+      } else if (request.url === '/api/auth' && request.method === 'GET') {
         send(response, 200, auth);
       } else if (request.url === '/api/auth' && request.method === 'POST') {
-        if (job?.status === 'running' || auth.status === 'signing-in') {
+        if (busy()) {
           send(response, 409, { error: 'Authentication or preparation is already running' });
           return;
         }
@@ -164,7 +179,7 @@ export function createExperimentalUiServer({
           send(response, 400, { error: error.message });
           return;
         }
-        if (job?.status === 'running' || auth.status === 'signing-in') {
+        if (busy()) {
           send(response, 409, { error: 'Authentication or preparation is already running' });
           return;
         }

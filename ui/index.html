@@ -28,6 +28,13 @@
         <button id="sign-in" type="button">Sign in with DA</button>
         <p class="hint">Sign-in opens Adobe login in your browser. Return here when finished, then prepare the migration.</p>
       </section>
+      <section class="panel" aria-label="AWS authentication">
+        <h2>AWS / KLAM authentication</h2>
+        <p id="aws-auth-message" role="status" aria-live="polite">Checking AWS authentication status...</p>
+        <p id="aws-auth-error" role="alert" hidden></p>
+        <button id="aws-sign-in" type="button">Sign in with AWS / KLAM</button>
+        <p class="hint">Opens AWS browser login. Select your KLAM operator console session; sign into KLAM first if needed. No credential copying required. Requires AWS CLI 2.32+ and local-development sign-in permission on the operator role.</p>
+      </section>
       <section class="panel">
         <h2>Site selection</h2>
         <form id="prepare-form">
@@ -46,7 +53,7 @@
             </label>
             <p class="hint">Skips these folders and their file history. Live inventory needs metadata requests to resolve versions, but never downloads excluded bodies.</p>
             <label class="option"><input name="fullValidation" type="checkbox"> Full validation (downloads source content to a private local snapshot)</label>
-            <p class="hint">Default: listing-only inventory. DA sign-in opens in your browser if needed. R2 and AWS credentials are loaded by the local server.</p>
+            <p class="hint">Default: listing-only inventory. DA and AWS browser sign-in open when needed. R2 credentials are loaded by the local server.</p>
             <button id="prepare-button" type="submit">Prepare Migration</button>
           </fieldset>
         </form>

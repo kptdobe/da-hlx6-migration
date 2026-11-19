@@ -13,6 +13,7 @@ import { createScope } from './scope.js';
 import { createProgress, formatMigrationSummary } from './progress.js';
 import { readOnlyClient, readOnlyFetch } from './production-dry-run.js';
 import { normalizeIgnoredFolders, selectMigrationEntries } from './migration-selection.js';
+import { createAwsAuth } from './aws-auth.js';
 
 const SAMPLE = Object.freeze({
   org: 'kptdobe', daSite: 'sample-content-da', hlx6Site: 'sample-content-hlx6-migrated',
@@ -99,7 +100,7 @@ function withAwsCredentialErrors(client) {
           ? 'the AWS environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN)'
           : `AWS profile "${process.env.AWS_PROFILE || 'default'}" in ~/.aws/credentials or its configured credential provider`;
         throw new Error(
-          `AWS storage credentials have expired. Refresh your local AWS/KLAM session credentials for ${source}, then retry the migration preparation. These are AWS credentials, not your DA login; "Sign in with DA" does not refresh them.`,
+          `AWS storage credentials have expired for ${source}. Use "Sign in with AWS / KLAM" in the UI, or retry the CLI to authenticate, then prepare again. These are AWS credentials, not your DA login; "Sign in with DA" does not refresh them.`,
           { cause: error },
         );
       }
@@ -115,6 +116,7 @@ export async function migrateCli(args, {
   }).trim(),
   fetchImpl = fetch,
   progress: suppliedProgress,
+  awsAuth: suppliedAwsAuth,
 } = {}) {
   const { values, positionals } = parseArgs({
     args,
@@ -195,6 +197,7 @@ export async function migrateCli(args, {
       org: daOrg, repo: daSite, bucket: BACKENDS.da.bucket,
     }, { org, repo: hlx6Site, bucket: BACKENDS.hlx6.bucket });
     applyDevVars(await progress.run('Loading credentials (not logged)', () => fs.readFile(values['env-file'], 'utf8')));
+    const awsAuth = suppliedAwsAuth || createAwsAuth();
     const roleArn = values['role-arn'] || process.env.MIGRATION_ROLE_ARN || ROLE_ARN;
     if (execute && !/^arn:aws:iam::\d{12}:role\/[A-Za-z0-9+=,.@_/-]+$/.test(roleArn)) {
       throw new Error('Execution requires a valid IAM migration role ARN');
@@ -202,7 +205,9 @@ export async function migrateCli(args, {
     if (execute && !['S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY', 'S3_DEF_URL'].every((key) => process.env[key])) {
       throw new Error('Execution requires read-only R2 credentials in the selected env file');
     }
-    let hlxClient = readOnlyClient(withAwsCredentialErrors(createReadClient('hlx6', { retryMode: 'adaptive' })));
+    let hlxClient = readOnlyClient(withAwsCredentialErrors(createReadClient('hlx6', {
+      retryMode: 'adaptive', credentials: awsAuth.credentials,
+    })));
     const targetConfig = await progress.run('Reading target site config', () => getObject(hlxClient,
       'helix-config-bus', `orgs/${org}/sites/${hlx6Site}.json`));
     const config = JSON.parse(targetConfig.body.toString('utf8'));
@@ -254,7 +259,9 @@ export async function migrateCli(args, {
         daContentBusId: report.sourceContentBusId, hlx6ContentBusId: report.targetContentBusId,
       });
       report.roleArn = roleArn;
-      hlxClient = withAwsCredentialErrors(createWriteClient(scope, roleArn));
+      hlxClient = withAwsCredentialErrors(createWriteClient(scope, roleArn, BACKENDS.hlx6.region, {
+        credentials: awsAuth.credentials,
+      }));
       progress.log(`Execution scope: source=${source}; target=${target}; role=${roleArn}; content writes=${scope.write[0].prefix}`);
     }
     const apiToken = fullValidation

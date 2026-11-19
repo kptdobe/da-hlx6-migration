@@ -16,7 +16,7 @@
 | Source bucket | `bucketMap.source`; defaults to **`helix-source-bus`** unless `HELIX_BUCKET_NAMES` (JSON) overrides it | shared-storage `parseBucketNames()` |
 | Media bucket | `bucketMap.media` → `helix-media-bus` | `storage.mediaBus()` |
 | R2 mirror | `sourceBus(disableR2 = true)` → **no R2 mirror** for source; S3 only | shared-storage `storage.js` |
-| Credentials | AWS KLAM role, account `118435662149`, region `us-east-1`, from `~/.aws/credentials` (temporary, refresh when expired). Read on `helix-source-bus` verified | - |
+| Credentials | AWS KLAM operator role, account `118435662149`, region `us-east-1`. Migration CLI/UI use on-demand AWS browser login; valid existing AWS credentials remain supported. | `src/aws-auth.js` |
 | API | `https://api.aem.live/{org}/sites/{site}/source/...` | helix-api-service `src/index.js` |
 | Site is hlx6? | `GET {HLX_ADMIN}/ping/{org}/{site}` returns the `x-api-upgrade-available` header | da-nx `nx2/utils/api.js` `isHlx6()` |
 
@@ -33,6 +33,36 @@ The prod bucket names must be confirmed from the deployed `HELIX_BUCKET_NAMES`.
 
 ## Gate before Phase 3
 Read-only access verified on both sides (2026-10-01). Migration credentials and runtime settings belong in this repo's local, git-ignored `.dev.vars`; do not symlink it to da-magic or another project's environment file. Use `chmod 600 .dev.vars` and never commit or share its contents.
+
+### On-demand AWS / KLAM sign-in
+
+The migration CLI and UI use `src/aws-auth.js` to validate and reuse cached AWS
+browser credentials or existing credentials. If authentication is missing or
+expired, the helper saves the dedicated login profile's region with
+`aws configure set region us-east-1 --profile <profile>`, then starts
+`aws login --profile <profile> --region us-east-1`. Persisting the region prevents
+the AWS CLI from asking for it in the terminal after browser authentication.
+Use an existing KLAM operator console session, signing into KLAM first if needed.
+No key copying is required. Explicit UI sign-in bypasses ambient copied keys.
+
+This requires AWS CLI **2.32.0+**, and `SignInLocalDevelopmentAccess` (or
+equivalent permissions) on the KLAM operator role. The helper does not install
+or upgrade shared CLI tooling or modify IAM policies. Missing prerequisites
+are reported explicitly; login failure never falls back to another identity.
+The existing migration role trust policy remains unchanged.
+
+Browser login uses the dedicated `da-hlx6-migration-login` profile, independently
+of `AWS_PROFILE`, so existing profiles containing copied keys remain untouched.
+The normal credential chain still honors `AWS_PROFILE` for existing credentials.
+AWS CLI stores the profile and refreshable login cache in `~/.aws/config` and
+`~/.aws/login/cache`. Credentials are never returned by the UI authentication
+endpoint or stored in browser local storage. Native AWS SDK refresh handles
+short-lived browser credentials; another browser login is requested when the
+session can no longer be refreshed. Network and authorization failures remain
+explicit errors rather than triggering another login.
+
+See the [AWS CLI browser-login documentation](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sign-in.html)
+for prerequisites, cache behavior, and session duration.
 
 ## Migration identity: one shared role, scoped per migration
 

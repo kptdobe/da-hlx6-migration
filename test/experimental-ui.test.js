@@ -8,6 +8,7 @@ import path from 'node:path';
 import { createExperimentalUiServer } from '../src/experimental-ui.js';
 import { migrateCli } from '../src/migration-cli.js';
 import { fakeClient } from './fixtures/fake-client.js';
+import { createAwsAuth } from '../src/aws-auth.js';
 
 const config = {
   content: { source: { url: 'https://content.da.live/source-org/source-site' } },
@@ -143,6 +144,7 @@ it('offers explicit asynchronous sign-in without starting preparation and uses t
   assert.equal(cleared, 1);
   assert.equal((await post({}, {}, '/api/auth')).status, 409);
   assert.equal((await post({ source: 'org/site' })).status, 409);
+  assert.equal((await post({}, {}, '/api/aws-auth')).status, 409);
   resolveLogin('fresh-token');
   assert.equal((await finished('/api/auth')).status, 'authenticated');
   await post({ source: 'org/site' });
@@ -150,6 +152,81 @@ it('offers explicit asynchronous sign-in without starting preparation and uses t
   assert.deepEqual(attempts, [{ browserLogin: true }, { browserLogin: true }]);
   assert.equal(calls[0].init.headers.authorization, 'Bearer fresh-token');
   assert.ok(!JSON.stringify(await get('/api/auth')).includes('fresh-token'));
+});
+
+it('offers asynchronous AWS browser sign-in, protects secrets, and shares the provider with preparation', async (t) => {
+  let finishLogin;
+  let logins = 0;
+  const credentials = { accessKeyId: 'private-aws-key', secretAccessKey: 'private-aws-secret', sessionToken: 'private-aws-token' };
+  const awsAuth = createAwsAuth({
+    loadLoginCredentials: async () => credentials,
+    loadCredentials: () => { throw new Error('Must not use local credentials'); },
+    validateCredentials: async () => {},
+    execute: async (args) => {
+      if (args[0] === '--version') return 'aws-cli/2.32.0';
+      if (args[0] === 'configure') return;
+      logins += 1;
+      await new Promise((resolve) => { finishLogin = resolve; });
+    },
+    onLogin() {},
+  });
+  const { post, get, finished, calls } = await start(t, {
+    awsAuth,
+    runDryRun: async (args, options) => {
+      assert.equal(options.awsAuth, awsAuth);
+      assert.equal((await options.awsAuth.credentials()).accessKeyId, credentials.accessKeyId);
+      return reportFor(...args.slice(-2));
+    },
+  });
+  assert.equal((await get('/api/aws-auth')).status, 'unknown');
+  assert.equal((await post({}, {}, '/api/aws-auth')).status, 202);
+  assert.equal((await get('/api/aws-auth')).status, 'signing-in');
+  assert.equal(await get(), null);
+  assert.equal(calls.length, 0);
+  assert.equal((await post({}, {}, '/api/aws-auth')).status, 409);
+  assert.equal((await post({}, {}, '/api/auth')).status, 409);
+  assert.equal((await post({ source: 'org/site' })).status, 409);
+  finishLogin();
+  assert.equal((await finished('/api/aws-auth')).status, 'authenticated');
+  await post({ source: 'org/site' });
+  const job = await finished();
+  assert.equal(job.status, 'complete');
+  assert.equal(logins, 1);
+  assert.doesNotMatch(JSON.stringify([job, await get('/api/aws-auth')]), /private-aws/);
+});
+
+it('exposes an automatic AWS login during preparation and permits retry after missing prerequisites', async (t) => {
+  let supported = false;
+  let loggedIn = false;
+  const awsAuth = createAwsAuth({
+    loadLoginCredentials: async () => {
+      if (!loggedIn) throw Object.assign(new Error('Missing login'), { name: 'CredentialsProviderError' });
+      return { accessKeyId: 'key', secretAccessKey: 'secret' };
+    },
+    loadCredentials: async () => { throw Object.assign(new Error('Missing keys'), { name: 'CredentialsProviderError' }); },
+    validateCredentials: async () => {},
+    execute: async (args) => {
+      if (args[0] === '--version') return supported ? 'aws-cli/2.32.0' : 'aws-cli/2.28.18';
+      if (args[0] === 'login') loggedIn = true;
+    },
+    onLogin() {},
+  });
+  const { post, get, finished } = await start(t, {
+    awsAuth,
+    runDryRun: async (args, options) => {
+      await options.awsAuth.credentials();
+      return reportFor(...args.slice(-2));
+    },
+  });
+  await post({ source: 'org/site' });
+  const failed = await finished();
+  assert.equal(failed.status, 'failed');
+  assert.match(failed.error, /AWS CLI 2\.32\.0/);
+  assert.equal((await get('/api/aws-auth')).status, 'failed');
+  supported = true;
+  await post({ source: 'org/site' });
+  assert.equal((await finished()).status, 'complete');
+  assert.equal((await get('/api/aws-auth')).status, 'authenticated');
 });
 
 it('allows fresh sign-in and retry after a rejected config authentication', async (t) => {
@@ -240,6 +317,7 @@ it('rejects foreign origins, hostnames, and non-JSON browser requests', async (t
   ]) {
     assert.equal((await post(input, headers)).status, 403, JSON.stringify(headers));
     assert.equal((await post({}, headers, '/api/auth')).status, 403, JSON.stringify(headers));
+    assert.equal((await post({}, headers, '/api/aws-auth')).status, 403, JSON.stringify(headers));
   }
   const badHostStatus = await new Promise((resolve, reject) => {
     const request = httpRequest(`${origin}/api/prepare`, {
@@ -264,6 +342,7 @@ it('keeps authentication asynchronous, refuses concurrent jobs, and permits a la
   assert.equal((await get()).status, 'running');
   assert.equal((await post({ source: 'other/site' })).status, 409);
   assert.equal((await post({}, {}, '/api/auth')).status, 409);
+  assert.equal((await post({}, {}, '/api/aws-auth')).status, 409);
   resolveToken('token');
   assert.equal((await finished()).status, 'complete');
   assert.equal((await post({ source: 'other/site' })).status, 202);

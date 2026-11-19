@@ -228,7 +228,7 @@ it('explains expired AWS credentials in progress and saved reports without misla
       const [blocker] = report.blockers;
       if (shouldExplain) {
         assert.match(blocker, /AWS storage credentials have expired/);
-        assert.match(blocker, /Refresh your local AWS\/KLAM session credentials/);
+        assert.match(blocker, /Use "Sign in with AWS \/ KLAM" in the UI, or retry the CLI to authenticate/);
         assert.match(blocker, /not your DA login/);
         assert.match(blocker, /"Sign in with DA" does not refresh them/);
         assert.match(blocker, scenario === 'profile' ? /profile "test-profile".*~\/\.aws\/credentials/ : /AWS environment variables/);
@@ -329,6 +329,7 @@ it('executes cross-org migrations with resolved bus IDs and target-only writes',
   });
   const writes = [];
   const apiCalls = [];
+  const awsAuth = { credentials: async () => { throw new Error('Fake storage must not resolve AWS credentials'); } };
   let scopedClientCreated = false;
   let downloadedSource;
   const messages = [];
@@ -339,9 +340,15 @@ it('executes cross-org migrations with resolved bus IDs and target-only writes',
       '-e', envFile, '-o', path.join(directory, 'report.json'),
     ], {
       progress,
-      createReadClient: (backend) => (backend === 'da' ? da : configs),
-      createWriteClient: (scope, selectedRole) => {
+      awsAuth,
+      createReadClient: (backend, options) => {
+        if (backend === 'hlx6') assert.equal(options.credentials, awsAuth.credentials);
+        return backend === 'da' ? da : configs;
+      },
+      createWriteClient: (scope, selectedRole, region, options) => {
         scopedClientCreated = true;
+        assert.equal(region, 'us-east-1');
+        assert.equal(options.credentials, awsAuth.credentials);
         assert.equal(selectedRole, roleArn);
         assert.equal(scope.org, 'target-org');
         assert.equal(scope.daOrg, 'source-org');

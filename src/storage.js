@@ -81,13 +81,13 @@ export async function putObject(client, scope, params) {
  * @param {object} scope from createScope
  * @param {string} roleArn migration role ARN
  */
-export function createMigrationClient(scope, roleArn, region = BACKENDS.hlx6.region) {
+export function createMigrationClient(scope, roleArn, region = BACKENDS.hlx6.region, opts = {}) {
   return new S3Client({
     region,
     maxAttempts: 5,
     requestHandler: httpHandler(),
     credentials: fromTemporaryCredentials({
-      masterCredentials: fromNodeProviderChain({ ignoreCache: true }),
+      masterCredentials: opts.credentials || fromNodeProviderChain({ ignoreCache: true }),
       params: {
         RoleArn: roleArn,
         RoleSessionName: sessionName(scope),
@@ -147,6 +147,7 @@ function httpHandler() {
  * @param {object} [opts]
  * @param {string} [opts.devVarsPath] path to `.dev.vars` for R2 credentials
  * @param {string} [opts.region] AWS region for hlx6
+ * @param {Function} [opts.credentials] AWS credential provider
  */
 export function createClient(backend, opts = {}) {
   if (backend === 'da') {
@@ -167,7 +168,7 @@ export function createClient(backend, opts = {}) {
   }
   if (backend === 'hlx6') {
     return new S3Client({
-      credentials: fromNodeProviderChain({ ignoreCache: true }),
+      credentials: opts.credentials || fromNodeProviderChain({ ignoreCache: true }),
       region: opts.region || BACKENDS.hlx6.region,
       retryMode: opts.retryMode || 'standard',
       maxAttempts: 5,

@@ -50,7 +50,7 @@ to the **hlx6** backend (helix-api-service, AWS S3 "source bus").
 `bin/migrate.js` supports arbitrary source and target organizations/sites. Execution resolves and validates both content bus IDs from live site configs and assumes a migration role scoped to the target. Legacy string-valued `fixedContentBusId` settings remain supported. The runner copies a fresh snapshot; it does not provide live delta synchronization or delete source objects.
 
 ## CLI usage
-Credentials and runtime settings are loaded from the local, git-ignored `.dev.vars` file; its non-empty values take precedence over shell variables. It holds the R2 read-only token, AWS profile/role settings, and target media API token. Keep its mode owner-only (`chmod 600 .dev.vars`).
+Credentials and runtime settings are loaded from the local, git-ignored `.dev.vars` file; its non-empty values take precedence over shell variables. It holds the R2 read-only token and optional AWS profile/role settings and DA token override. Migration preparation and execution can obtain temporary AWS credentials through browser login; copied AWS keys are not required. Keep the file's mode owner-only (`chmod 600 .dev.vars`).
 
 ```bash
 npm install
@@ -108,7 +108,49 @@ Keep DA edits frozen through verification and cutover. Resume does not bypass
 target conflicts or overwrite protection. Full validation and execution obtain
 DA authentication before loading or downloading source bodies.
 
-Execution additionally requires the dedicated `da-hlx6-migration` AWS role, the R2 read-only credentials, and a DA auth token whose identity is authorized for DA config/image reads and target `media:upload`, `config:read`, and `config:write`. The runner obtains one token from the local `da-auth/src/cli.js token` helper, or uses `DA_CONFIG_TOKEN` if supplied, and shares it across these API calls. No separate target-specific bearer tokens are required. Put the AWS and R2 settings in `.dev.vars`, then run `node bin/migrate.js <source-org/source-site> <target-org/target-site> --refresh-source -x`. It has no delete path and refuses unplanned target objects.
+Execution additionally requires the dedicated `da-hlx6-migration` AWS role, the R2 read-only credentials, and a DA auth token whose identity is authorized for DA config/image reads and target `media:upload`, `config:read`, and `config:write`. The runner obtains one token from the local `da-auth/src/cli.js token` helper, or uses `DA_CONFIG_TOKEN` if supplied, and shares it across these API calls. No separate target-specific bearer tokens are required. Put the R2 settings and any optional AWS profile/role settings in `.dev.vars`, then run `node bin/migrate.js <source-org/source-site> <target-org/target-site> --refresh-source -x`. It has no delete path and refuses unplanned target objects.
+
+### AWS / KLAM browser authentication
+
+Migration preparation and execution reuse a cached AWS browser session, or valid
+existing AWS credentials. Missing or expired credentials trigger `aws login`.
+Sign into KLAM to establish an AWS console session if needed, then select that
+operator session in the AWS login browser window. There is no need to copy
+access keys or session tokens.
+
+Prerequisites:
+- **AWS CLI 2.32.0 or newer** (`aws --version`). Older or missing installations
+  produce an explicit upgrade/install error.
+- The KLAM operator role must allow AWS local-development sign-in; ask an account
+  administrator to grant the AWS-managed `SignInLocalDevelopmentAccess` policy
+  or equivalent permissions. This belongs on the operator role, not the scoped
+  migration role. See [AWS browser-login setup](https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-sign-in.html).
+
+Browser login uses the dedicated `da-hlx6-migration-login` profile, independently
+of `AWS_PROFILE`. This avoids conflicting with copied access keys in `default`
+or another existing profile, which remain untouched. Existing credentials can
+still be read through the normal AWS credential chain. Before opening login, the
+helper saves `us-east-1` as the login profile's region so first-time sign-in does
+not prompt for a region in the terminal.
+AWS CLI manages the login profile in `~/.aws/config` and
+short-lived authentication data in `~/.aws/login/cache`; this is not a
+zero-local-cache flow. The helper does not write `~/.aws/credentials` or copy
+AWS secrets into `.dev.vars`. Explicit browser sign-in takes precedence over
+copied credentials for the running UI session. SDK credential refresh reuses
+the browser session until reauthentication is required.
+
+The UI's **Sign in with AWS / KLAM** button starts login without running a
+migration; **Prepare Migration** authenticates automatically when needed.
+Only authentication status and actionable errors reach the browser, never AWS
+keys or session tokens. Network and storage authorization failures are not
+silently treated as expired sessions. AWS and DA sign-in remain separate.
+Execution still assumes the existing migration role with the same scope tags;
+this feature does not change IAM trust or storage permissions. R2 access still
+requires the read-only credentials in `.dev.vars`.
+
+Standalone dump commands continue to use the standard AWS credential chain.
+To reuse the browser session with them, select its profile, for example
+`AWS_PROFILE=da-hlx6-migration-login node bin/dump.js -b hlx6 <org/site>`.
 
 Any stored object under the target site's prefix requires explicit `--overwrite`
 for execution, including objects from a prior identical migration. This is
@@ -202,7 +244,7 @@ npm run ui
 ```
 
 Open the printed loopback-only `http://127.0.0.1:3000` URL; do not expose or proxy
-the server. It uses the same private credentials and storage clients as the CLI.
+the server. It uses the same authentication helper and storage clients as the migration CLI.
 Enter the source organization/site, optionally choose a different destination,
 and enter ignored site folders one per line. Site selection and ignored folders
 are saved in browser local storage. Tokens, configs, reports and the full-validation
@@ -211,8 +253,9 @@ option are not stored there.
 **Prepare Migration** authenticates with `da-auth-helper` or `DA_CONFIG_TOKEN`,
 loads aggregated site configs, and runs an inventory dry-run. **Full validation**
 opts into source downloads and body-dependent checks. The UI never executes
-remote writes. **Sign in with DA** starts a fresh browser login; it does not
-refresh AWS/KLAM storage credentials. Authentication/config errors and progress
+remote writes. **Sign in with DA** starts a fresh Adobe browser login;
+**Sign in with AWS / KLAM** starts AWS browser login using your KLAM console
+session. Preparation obtains AWS authentication on demand. Authentication/config errors and progress
 are shown explicitly. One preparation runs at a time; the active job and last
 report remain available on reload until the server stops or another preparation
 starts. Configs and reports can contain sensitive site settings, so do not share

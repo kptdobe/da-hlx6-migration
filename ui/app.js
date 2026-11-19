@@ -12,6 +12,9 @@ const stateArea = document.querySelector('#migration-state');
 const authMessage = document.querySelector('#auth-message');
 const authError = document.querySelector('#auth-error');
 const signIn = document.querySelector('#sign-in');
+const awsAuthMessage = document.querySelector('#aws-auth-message');
+const awsAuthError = document.querySelector('#aws-auth-error');
+const awsSignIn = document.querySelector('#aws-sign-in');
 const configArea = document.querySelector('#configs');
 const reportArea = document.querySelector('#report');
 const selectionNotice = document.querySelector('#selection-notice');
@@ -21,6 +24,7 @@ let displayedReport;
 let preparing = false;
 let currentJob;
 let currentAuth;
+let currentAwsAuth;
 let pendingAction = 'status';
 let connectionError = false;
 let hasSelection = false;
@@ -35,12 +39,17 @@ function renderActivity() {
     state = 'warning';
   } else if (pendingAction) {
     title = pendingAction === 'prepare' ? 'Starting preparation...'
-      : pendingAction === 'auth' ? 'Starting DA sign-in...' : 'Checking activity...';
+      : pendingAction === 'auth' ? 'Starting DA sign-in...'
+        : pendingAction === 'aws-auth' ? 'Starting AWS sign-in...' : 'Checking activity...';
     detail = 'Waiting for the local server.';
     state = 'running';
   } else if (currentAuth?.status === 'signing-in') {
     title = 'DA sign-in in progress';
     detail = currentAuth.message;
+    state = 'running';
+  } else if (currentAwsAuth?.status === 'signing-in') {
+    title = 'AWS sign-in in progress';
+    detail = currentAwsAuth.message;
     state = 'running';
   } else if (preparing) {
     const configsLoaded = currentJob.configs?.[currentJob.source]
@@ -51,6 +60,10 @@ function renderActivity() {
   } else if (currentAuth?.status === 'failed') {
     title = 'DA sign-in failed';
     detail = currentAuth.message;
+    state = 'failed';
+  } else if (currentAwsAuth?.status === 'failed') {
+    title = 'AWS sign-in failed';
+    detail = currentAwsAuth.message;
     state = 'failed';
   } else if (currentJob?.status === 'blocked') {
     title = 'Dry-run blocked';
@@ -73,21 +86,45 @@ function renderActivity() {
   prepareButton.textContent = preparing || pendingAction === 'prepare' ? 'Preparing...' : 'Prepare Migration';
 }
 
+function updateControls() {
+  const busy = preparing || Boolean(pendingAction)
+    || currentAuth?.status === 'signing-in' || currentAwsAuth?.status === 'signing-in';
+  signIn.disabled = busy;
+  awsSignIn.disabled = busy;
+  inputs.disabled = busy;
+}
+
 function renderAuth(auth) {
   currentAuth = auth;
   const signingIn = auth.status === 'signing-in';
   authMessage.textContent = auth.message;
   authError.hidden = !auth.error;
   authError.textContent = auth.error ?? '';
-  signIn.disabled = signingIn || preparing;
   signIn.textContent = signingIn ? 'Signing in...' : auth.status === 'authenticated' ? 'Sign in again with DA' : 'Sign in with DA';
-  inputs.disabled = signingIn || preparing;
+  updateControls();
+  renderActivity();
+}
+
+function renderAwsAuth(auth) {
+  currentAwsAuth = auth;
+  awsAuthMessage.textContent = auth.message;
+  awsAuthError.hidden = !auth.error;
+  awsAuthError.textContent = auth.error ?? '';
+  awsSignIn.textContent = auth.status === 'signing-in' ? 'Signing in...'
+    : auth.status === 'authenticated' ? 'Sign in again with AWS / KLAM' : 'Sign in with AWS / KLAM';
+  updateControls();
   renderActivity();
 }
 
 async function refreshAuth() {
   const auth = await request(undefined, '/api/auth');
   renderAuth(auth);
+  return auth;
+}
+
+async function refreshAwsAuth() {
+  const auth = await request(undefined, '/api/aws-auth');
+  renderAwsAuth(auth);
   return auth;
 }
 
@@ -254,8 +291,7 @@ function render(job) {
   pendingAction = null;
   connectionError = false;
   preparing = job?.status === 'running';
-  inputs.disabled = preparing;
-  signIn.disabled = preparing;
+  updateControls();
   renderActivity();
   errorBox.hidden = !job?.error;
   errorBox.textContent = job?.error ?? '';
@@ -273,28 +309,27 @@ async function request(options, endpoint = '/api/prepare') {
 
 async function follow(job) {
   render(job);
-  let auth = await refreshAuth();
-  while (job?.status === 'running' || auth.status === 'signing-in') {
+  let [auth, awsAuth] = await Promise.all([refreshAuth(), refreshAwsAuth()]);
+  while (job?.status === 'running' || auth.status === 'signing-in' || awsAuth.status === 'signing-in') {
     await new Promise((resolve) => window.setTimeout(resolve, 1000));
     job = await request();
     render(job);
-    auth = await refreshAuth();
+    [auth, awsAuth] = await Promise.all([refreshAuth(), refreshAwsAuth()]);
   }
 }
 
 function showError(error) {
   pendingAction = null;
   connectionError = true;
-  inputs.disabled = false;
+  updateControls();
   errorBox.textContent = error.message;
   errorBox.hidden = false;
   renderActivity();
 }
 
-signIn.addEventListener('click', async () => {
-  signIn.disabled = true;
-  inputs.disabled = true;
-  pendingAction = 'auth';
+async function startSignIn(endpoint, renderStatus, action) {
+  pendingAction = action;
+  updateControls();
   connectionError = false;
   renderActivity();
   try {
@@ -302,24 +337,21 @@ signIn.addEventListener('click', async () => {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: '{}',
-    }, '/api/auth');
+    }, endpoint);
     pendingAction = null;
-    renderAuth(auth);
+    renderStatus(auth);
     while (auth.status === 'signing-in') {
       await new Promise((resolve) => window.setTimeout(resolve, 1000));
-      auth = await refreshAuth();
+      auth = await request(undefined, endpoint);
+      renderStatus(auth);
     }
   } catch (error) {
-    pendingAction = null;
-    connectionError = true;
-    authError.textContent = error.message;
-    authError.hidden = false;
-    authMessage.textContent = 'Unable to retrieve sign-in status. Reload to reconnect before trying again.';
-    signIn.disabled = false;
-    inputs.disabled = false;
-    renderActivity();
+    showError(error);
   }
-});
+}
+
+signIn.addEventListener('click', () => startSignIn('/api/auth', renderAuth, 'auth'));
+awsSignIn.addEventListener('click', () => startSignIn('/api/aws-auth', renderAwsAuth, 'aws-auth'));
 
 function updateTargetFields() {
   targetFields.hidden = !differentTarget.checked;
@@ -384,9 +416,9 @@ form.addEventListener('submit', async (event) => {
   const data = new FormData(form);
   const source = `${data.get('org')}/${data.get('site')}`;
   const target = differentTarget.checked ? `${data.get('targetOrg')}/${data.get('targetSite')}` : source;
-  inputs.disabled = true;
-  errorBox.hidden = true;
   pendingAction = 'prepare';
+  updateControls();
+  errorBox.hidden = true;
   connectionError = false;
   renderActivity();
   try {
