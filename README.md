@@ -137,9 +137,11 @@ and dot/empty path segments are rejected.
 **Cost:** prefix checks are cheap, but DA stores history by document ID rather
 than folder. DA IDs are random UUIDs (or caller-supplied GUIDs), not hashes of
 the path; updates and moves retain the stored ID, so generating an ID locally
-cannot recover the existing history folder. With stored history, live runs HEAD ignored current objects to
-resolve IDs, then HEAD remaining versions to check path hints. History already
-matched by an ignored ID needs no HEAD or GET. Sites without history need no
+cannot recover the existing history folder. With stored history, live runs HEAD
+ignored non-media current objects to resolve IDs, then HEAD remaining versions
+to check path hints. Media, including trashed media, have no DA version history
+and need no identity metadata reads. History already matched by an ignored ID
+needs no HEAD or GET. Sites without history need no
 extra metadata reads. Large histories can therefore add significant latency and
 metadata-request charges, even in inventory mode. Requests use the configured
 download concurrency (`--concurrency`, default 24).

@@ -115,6 +115,71 @@ it('does not suppress permission, service, or unresolved version metadata failur
   }), (error) => error === missing);
 });
 
+for (const local of [false, true]) {
+  it(`excludes ${local ? 'local' : 'live'} current and trashed media without identity metadata reads`, async () => {
+    const entries = [
+      { key: `${source}/.import/image.jpg` },
+      { key: `${source}/.import/clip.mp4` },
+      { key: `${source}/.import/manual.pdf` },
+      { key: `${source}/.import/original.tif` },
+      { key: `${source}/.trash/deleted.PNG` },
+      { key: `${source}/.trash/drafts/esp-dev/nested.avif` },
+      { key: `${source}/drafts/esp-stage/image.webp` },
+      { key: `${source}/.import-other/keep.jpg` },
+      { key: `${source}/keep.html` },
+      {
+        key: `${source}/.da-versions/keep/v.html`,
+        ...(local ? { metadata: { path: 'source/keep.html' } } : {}),
+      },
+      { key: `${source}/.da-versions/keep/audit.txt` },
+    ];
+    const requests = [];
+    const excluded = [];
+    const selected = await selectMigrationEntries(entries, {
+      source, ignoredFolders: [...ignoredFolders, '/.import', '/.trash'],
+      readMetadata: async (key) => {
+        assert.ok(!local, 'Local version metadata must be reused');
+        assert.equal(key, `${source}/.da-versions/keep/v.html`);
+        requests.push(key);
+        return { path: 'source/keep.html' };
+      },
+      onExcluded: (entry) => excluded.push(entry),
+    });
+    assert.deepEqual(selected, entries.slice(7));
+    assert.deepEqual(excluded.map(({ key }) => key), entries.slice(0, 7).map(({ key }) => key));
+    assert.deepEqual(requests, local ? [] : [`${source}/.da-versions/keep/v.html`]);
+  });
+}
+
+it('still resolves current and trashed document and sheet identities to exclude history', async () => {
+  const identities = [
+    { key: `${source}/drafts/esp-dev/a.html`, id: 'doc', ext: 'html' },
+    { key: `${source}/drafts/esp-dev/b.json`, id: 'sheet', ext: 'json' },
+    { key: `${source}/.trash/deleted.html`, id: 'trashed-doc', ext: 'html' },
+    { key: `${source}/.trash/deleted.json`, id: 'trashed-sheet', ext: 'json' },
+  ];
+  const entries = [
+    ...identities.map(({ key }) => ({ key })),
+    ...identities.flatMap(({ id, ext }) => [
+      { key: `${source}/.da-versions/${id}/v.${ext}` },
+      { key: `${source}/.da-versions/${id}/audit.txt` },
+    ]),
+    { key: `${source}/keep.html` },
+  ];
+  const requests = [];
+  const selected = await selectMigrationEntries(entries, {
+    source, ignoredFolders: [...ignoredFolders, '/.trash'],
+    readMetadata: async (key) => {
+      const identity = identities.find((entry) => entry.key === key);
+      assert.ok(identity, `Unexpected history metadata read: ${key}`);
+      requests.push(key);
+      return { id: identity.id };
+    },
+  });
+  assert.deepEqual(selected, entries.slice(-1));
+  assert.deepEqual(requests.sort(), identities.map(({ key }) => key).sort());
+});
+
 it('needs no metadata reads without history and supports explicit internal folder paths', async () => {
   const readMetadata = () => { throw new Error('No metadata requests expected'); };
   assert.deepEqual(await selectMigrationEntries([
@@ -226,6 +291,8 @@ for (const mode of ['inventory', 'full validation', 'execution']) {
     const da = fakeClient({
       [`${source}/keep.html`]: { body: '<main>keep</main>', metadata: { id: 'keep' } },
       [`${source}/drafts/esp-dev/a.html`]: { body: '<img src="https://excluded.example/image.png">', metadata: { id: 'ignored' } },
+      [`${source}/drafts/esp-dev/image.jpg`]: { body: 'ignored image' },
+      [`${source}/.trash/drafts/esp-stage/deleted.png`]: { body: 'ignored trashed image' },
       [`${source}/drafts/esp-stage.props`]: { body: '{}', metadata: { id: 'folder' } },
       [`${source}/.da-versions/ignored/v.html`]: { body: 'ignored', metadata: { path: 'source/old.html' } },
       [`${source}/.da-versions/ignored/audit.txt`]: { body: 'ignored audit' },
@@ -268,7 +335,7 @@ for (const mode of ['inventory', 'full validation', 'execution']) {
     assert.deepEqual(report.blockers, []);
     assert.deepEqual(report.ignoredFolders, ignoredFolders);
     assert.equal(report.sourceObjects, 2);
-    assert.equal(report.excluded.filter(({ reason }) => reason === 'ignored-folder').length, 5);
+    assert.equal(report.excluded.filter(({ reason }) => reason === 'ignored-folder').length, 7);
     assert.equal(requests.filter(({ name }) => name === 'HeadObjectCommand').length, 4);
     assert.equal(report.folderExclusionMetadataReads, 4);
     const gets = requests.filter(({ name }) => name === 'GetObjectCommand').map(({ key }) => key).sort();
@@ -289,6 +356,6 @@ for (const mode of ['inventory', 'full validation', 'execution']) {
     } else {
       assert.equal(report.inventory.source.length, 2);
     }
-    assert.equal(JSON.parse(await fs.readFile(path.join(directory, 'report.json'), 'utf8')).excluded.length, 5);
+    assert.equal(JSON.parse(await fs.readFile(path.join(directory, 'report.json'), 'utf8')).excluded.length, 7);
   });
 }

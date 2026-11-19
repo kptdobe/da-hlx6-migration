@@ -14,7 +14,7 @@ export function normalizeIgnoredFolders(folders = []) {
 
 /**
  * Selects before body reads. DA history uses identity keys, requiring metadata
- * for ignored current files and remaining versions whose path hints may match.
+ * for ignored non-media current files and remaining versions whose path hints may match.
  */
 export async function selectMigrationEntries(entries, {
   source, ignoredFolders, readMetadata, concurrency = 24, onProgress = () => {},
@@ -36,9 +36,9 @@ export async function selectMigrationEntries(entries, {
   const candidates = classified.filter((item) => !['version', 'audit'].includes(item.kind)
     && (excluded.has(item.entry.key) || matches(item.path)));
   onProgress({ phase, completed, total: candidates.length });
-  await processQueue(candidates, async ({ entry }) => {
+  await processQueue(candidates, async ({ entry, kind, trashedKind }) => {
     excluded.add(entry.key);
-    if (hasHistory) {
+    if (hasHistory && (kind === 'trash' ? trashedKind : kind) !== 'media') {
       try {
         const meta = await metadata(entry);
         if (meta.id) ignoredIds.add(meta.id);
