@@ -129,6 +129,73 @@ describe('scanSite', () => {
 });
 
 describe('writeDump / readDump', () => {
+  it('bounds concurrent snapshot body reads and preserves manifest order', async (t) => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'dump-concurrency-'));
+    try {
+      const entries = await scanSite({
+        client: fakeClient(daObjects), backend: 'da', bucket: 'aem-content', org: 'kptdobe', site: 'sample-da',
+      });
+      await writeDump(dir, entries, { snapshotMetadata: {} });
+      const readFile = fs.readFile.bind(fs);
+      let active = 0;
+      let peak = 0;
+      t.mock.method(fs, 'readFile', async (file, ...args) => {
+        if (!String(file).includes(`${path.sep}files${path.sep}`)) return readFile(file, ...args);
+        active += 1;
+        peak = Math.max(peak, active);
+        try {
+          await new Promise((resolve) => setTimeout(resolve, String(file).endsWith('audit.txt') ? 20 : 1));
+          return await readFile(file, ...args);
+        } finally {
+          active -= 1;
+        }
+      });
+      const back = await readDump(dir, { requireComplete: true, concurrency: 2 });
+      assert.equal(peak, 2);
+      assert.equal(active, 0);
+      assert.deepEqual(back.map(({ key }) => key), entries.map(({ key }) => key));
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('requires complete markers, matching counts and saved bodies when resuming', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'dump-resume-'));
+    try {
+      const entries = await scanSite({
+        client: fakeClient(daObjects), backend: 'da', bucket: 'aem-content', org: 'kptdobe', site: 'sample-da',
+      });
+      await writeDump(dir, entries, { snapshotMetadata: {} });
+      const marker = await fs.readFile(path.join(dir, 'snapshot.json'), 'utf8');
+      const manifest = await fs.readFile(path.join(dir, 'manifest.json'), 'utf8');
+      const back = await readDump(dir, { requireComplete: true, concurrency: 1 });
+      assert.deepEqual(back.map(({ key }) => key), entries.map(({ key }) => key));
+      for (const snapshot of [
+        { complete: false, downloaded: 4, total: 4 },
+        { complete: true, downloaded: 3, total: 4 },
+        { complete: true },
+        { complete: true, downloaded: 5, total: 5 },
+      ]) {
+        await fs.writeFile(path.join(dir, 'snapshot.json'), JSON.stringify(snapshot));
+        await assert.rejects(readDump(dir, { requireComplete: true }), /Snapshot (is incomplete|completion counts are invalid|manifest is incomplete)/);
+      }
+      await fs.writeFile(path.join(dir, 'snapshot.json'), marker);
+      const missingBody = JSON.parse(manifest);
+      delete missingBody[0].bodyFile;
+      await fs.writeFile(path.join(dir, 'manifest.json'), JSON.stringify(missingBody));
+      await assert.rejects(readDump(dir, { requireComplete: true }), /Snapshot manifest is incomplete/);
+      await fs.writeFile(path.join(dir, 'manifest.json'), manifest);
+      await fs.unlink(path.join(dir, JSON.parse(manifest)[0].bodyFile));
+      await assert.rejects(readDump(dir, { requireComplete: true }), /ENOENT/);
+      await writeDump(dir, entries, { snapshotMetadata: {} });
+      await fs.unlink(path.join(dir, 'snapshot.json'));
+      await assert.rejects(readDump(dir, { requireComplete: true }), /Snapshot completion marker is missing/);
+      assert.equal((await readDump(dir)).length, 4);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('round-trips manifest and bodies through the file system', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'dump-'));
     try {

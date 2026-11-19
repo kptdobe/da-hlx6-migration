@@ -135,26 +135,40 @@ export async function writeDump(outDir, entries, { onProgress = () => {}, snapsh
  */
 export async function readDump(outDir, {
   onProgress = () => {}, withBodies = true, selectEntries = async (entries) => entries,
-  validateSnapshot = () => {},
+  validateSnapshot = () => {}, requireComplete = false, concurrency = 20,
 } = {}) {
+  let snapshot;
   try {
-    const snapshot = JSON.parse(await fs.readFile(path.join(outDir, 'snapshot.json'), 'utf8'));
+    snapshot = JSON.parse(await fs.readFile(path.join(outDir, 'snapshot.json'), 'utf8'));
     if (!snapshot.complete) throw new Error(`Snapshot is incomplete: ${outDir}`);
+    if (requireComplete && (snapshot.complete !== true || !Number.isInteger(snapshot.total)
+      || snapshot.total < 1 || snapshot.downloaded !== snapshot.total)) {
+      throw new Error(`Snapshot completion counts are invalid: ${outDir}`);
+    }
     validateSnapshot(snapshot);
   } catch (error) {
     if (error.code !== 'ENOENT') throw error;
+    if (requireComplete) throw new Error(`Snapshot completion marker is missing: ${outDir}`, { cause: error });
   }
   const phase = `Reading local dump ${outDir}`;
   onProgress({ phase });
-  const manifest = await selectEntries(JSON.parse(await fs.readFile(path.join(outDir, 'manifest.json'), 'utf8')));
+  const saved = JSON.parse(await fs.readFile(path.join(outDir, 'manifest.json'), 'utf8'));
+  if (requireComplete && (saved.length !== snapshot.total
+    || saved.some((entry) => typeof entry.bodyFile !== 'string' || !entry.bodyFile))) {
+    throw new Error(`Snapshot manifest is incomplete: ${outDir}`);
+  }
+  const manifest = await selectEntries(saved);
   let completed = 0;
   onProgress({ phase, completed, total: manifest.length });
-  return Promise.all(manifest.map(async (entry) => {
+  const entries = new Array(manifest.length);
+  await processQueue([...manifest.keys()], async (index) => {
+    const entry = manifest[index];
     const result = withBodies && entry.bodyFile
       ? { ...entry, body: await fs.readFile(path.join(outDir, entry.bodyFile)) }
       : entry;
+    entries[index] = result;
     completed += 1;
     onProgress({ phase, completed, total: manifest.length, key: entry.key });
-    return result;
-  }));
+  }, concurrency);
+  return entries;
 }
