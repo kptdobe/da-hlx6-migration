@@ -66,6 +66,10 @@ p { margin: 0 0 14px; }
 .pill[data-state="running"] { color: var(--blue); background: #edf0ff; border-color: #dfe4ff; }
 .pill[data-state="failed"] { color: #a23838; background: #fdf0ef; border-color: #f0d7d4; }
 .auth-message { color: #4a5871; font-size: 12px; margin: auto 0 18px; padding-top: 15px; }
+.session-expiry { overflow-wrap: anywhere; }
+.session-status { display: flex; flex-wrap: wrap; gap: 8px 24px; font-size: 11px; color: var(--muted); margin: 0 0 20px; }
+.session-status > span { flex: 1 1 240px; overflow-wrap: anywhere; }
+.session-status [data-state="warning"] { color: #835b23; }
 .hint { color: var(--muted); font-size: 12px; font-weight: 400; }
 button { background: var(--blue); border: 1px solid transparent; border-radius: 7px; padding: 11px 17px; font-size: 12px; font-weight: 600; color: white; transition: background .15s; }
 button:hover:not(:disabled) { background: #2e46b3; }

@@ -1,9 +1,9 @@
 import { createServer } from 'node:http';
 import fs from 'node:fs/promises';
-import { getValidToken, clearStoredToken } from 'da-auth-helper';
 import { migrateCli } from './migration-cli.js';
 import { normalizeIgnoredFolders } from './migration-selection.js';
 import { createAwsAuth } from './aws-auth.js';
+import { createDaAuth } from './auth.js';
 
 const SITE = /^[a-z0-9][a-z0-9-]{0,62}\/[a-z0-9][a-z0-9-]{0,62}$/;
 const ASSETS = new Map([
@@ -62,34 +62,16 @@ function summarizeAnalysis(report) {
 
 export function createExperimentalUiServer({
   envFile = '.dev.vars',
-  tokenProvider = ({ browserLogin = false } = {}) => getValidToken({
-    override: browserLogin ? undefined : process.env.DA_CONFIG_TOKEN,
-  }),
-  clearToken = clearStoredToken,
+  tokenProvider,
+  clearToken,
+  cachedTokenProvider,
   fetchImpl = fetch,
   runDryRun = migrateCli,
   awsAuth = createAwsAuth(),
+  now = Date.now,
 } = {}) {
   let job = null;
-  let auth = { status: 'unknown', message: 'Sign in to connect your Adobe account.' };
-  let useBrowserAuth = false;
-
-  async function authenticate(forceLogin = false) {
-    auth = { status: 'signing-in', message: 'Complete DA sign-in in the browser window. If it does not open, use the login URL in the server terminal.' };
-    try {
-      if (forceLogin) {
-        useBrowserAuth = true;
-        await clearToken();
-      }
-      const token = await tokenProvider({ browserLogin: useBrowserAuth });
-      if (typeof token !== 'string' || !token.trim()) throw new Error('DA authentication returned no token');
-      auth = { status: 'authenticated', message: 'DA sign-in completed. Site permissions are checked during analysis.' };
-      return token;
-    } catch (error) {
-      auth = { status: 'failed', message: 'DA sign-in failed. You can try again.', error: error.message };
-      throw error;
-    }
-  }
+  const daAuth = createDaAuth({ tokenProvider, clearToken, cachedTokenProvider, now });
 
   async function prepare(current) {
     const update = (phase, counters = {}) => {
@@ -99,7 +81,7 @@ export function createExperimentalUiServer({
     };
     try {
       update('Authenticating with DA; complete browser sign-in if prompted');
-      const token = await authenticate();
+      const token = await daAuth.authenticate();
       const configs = {};
       for (const site of new Set([current.source, current.target])) {
         update(`Loading aggregated config for ${site}`);
@@ -111,7 +93,13 @@ export function createExperimentalUiServer({
           signal: AbortSignal.timeout(60_000),
         });
         if (response.status === 401) {
-          auth = { status: 'required', message: 'DA authentication was rejected. Sign in with DA, then prepare again.' };
+          daAuth.requireSignIn();
+        }
+        if (response.status === 404) {
+          if (site === current.target) {
+            throw new Error(`Target site configuration for ${site} does not exist (404). Create the target site configuration manually before migration can proceed, then run analysis again. This tool does not create site configurations.`);
+          }
+          throw new Error(`Source site configuration for ${site} does not exist (404). Check the source organization and site / repository name, then run analysis again.`);
         }
         if (!response.ok) throw new Error(`Config fetch failed for ${site} (${response.status}); check DA sign-in and config:read permission`);
         const config = await response.json();
@@ -155,8 +143,9 @@ export function createExperimentalUiServer({
     }
   }
 
-  const busy = () => job?.status === 'running' || auth.status === 'signing-in'
-    || awsAuth.getStatus().status === 'signing-in';
+  const busy = () => job?.status === 'running'
+    || ['signing-in', 'checking'].includes(daAuth.getStatus().status)
+    || ['signing-in', 'checking'].includes(awsAuth.getStatus().status);
 
   return createServer(async (request, response) => {
     // Reject DNS rebinding and cross-origin browser access to local credentials.
@@ -177,7 +166,7 @@ export function createExperimentalUiServer({
         return;
       }
       if (request.url === '/api/aws-auth' && request.method === 'GET') {
-        send(response, 200, awsAuth.getStatus());
+        send(response, 200, await awsAuth.restore());
       } else if (request.url === '/api/aws-auth' && request.method === 'POST') {
         if (busy()) {
           send(response, 409, { error: 'Authentication or preparation is already running' });
@@ -187,14 +176,14 @@ export function createExperimentalUiServer({
         send(response, 202, awsAuth.getStatus());
         void signingIn.catch((error) => console.error(`AWS sign-in failed: ${error.message}`));
       } else if (request.url === '/api/auth' && request.method === 'GET') {
-        send(response, 200, auth);
+        send(response, 200, await daAuth.restore());
       } else if (request.url === '/api/auth' && request.method === 'POST') {
         if (busy()) {
           send(response, 409, { error: 'Authentication or preparation is already running' });
           return;
         }
-        const signingIn = authenticate(true);
-        send(response, 202, auth);
+        const signingIn = daAuth.authenticate(true);
+        send(response, 202, daAuth.getStatus());
         void signingIn.catch((error) => console.error(`DA sign-in failed: ${error.message}`));
       } else if (request.url === '/api/prepare' && request.method === 'GET') {
         send(response, 200, job);

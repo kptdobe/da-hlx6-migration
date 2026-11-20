@@ -70,6 +70,8 @@ it('reuses and validates a cached browser session without local keys or AWS CLI'
   assert.deepEqual(await auth.credentials(), credentials);
   assert.deepEqual(validated, [credentials]);
   assert.equal(auth.getStatus().status, 'authenticated');
+  assert.equal(auth.getStatus().expiresAt, credentials.expiration.toISOString());
+  assert.equal(auth.getStatus().refreshable, true);
   assert.doesNotMatch(JSON.stringify(auth.getStatus()), /private-test/);
 });
 
@@ -87,6 +89,68 @@ it('preserves valid existing AWS credentials and periodically revalidates copied
   assert.equal(result.accessKeyId, copied.accessKeyId);
   assert.ok(result.expiration.getTime() >= before + 15 * 60_000);
   assert.ok(result.expiration.getTime() <= Date.now() + 15 * 60_000);
+  assert.equal(auth.getStatus().expiresAt, null);
+  assert.equal(auth.getStatus().refreshable, false);
+});
+
+it('restores saved AWS sessions across instances without launching login and caches validation', async () => {
+  let validations = 0;
+  for (let restart = 0; restart < 2; restart += 1) {
+    const auth = createAwsAuth({
+      loadLoginCredentials: async () => credentials,
+      loadCredentials: unexpectedLogin,
+      validateCredentials: async () => { validations += 1; },
+      execute: unexpectedLogin,
+    });
+    assert.equal((await auth.restore()).status, 'authenticated');
+    assert.equal((await auth.restore()).expiresAt, credentials.expiration.toISOString());
+    assert.doesNotMatch(JSON.stringify(await auth.restore()), /private-test/);
+  }
+  assert.equal(validations, 2);
+});
+
+it('reports missing or expired sessions as required without starting a browser', async () => {
+  for (const load of [missing, async () => ({ ...credentials, expiration: new Date(0) })]) {
+    const auth = createAwsAuth({
+      loadLoginCredentials: load, loadCredentials: missing,
+      validateCredentials: unexpectedLogin, execute: unexpectedLogin,
+    });
+    const status = await auth.restore();
+    assert.equal(status.status, 'required');
+    assert.match(status.message, /No valid saved AWS session/);
+  }
+});
+
+it('refreshes near-expiry saved credentials noninteractively and updates their real expiry', async () => {
+  let time = Date.now();
+  let current = { ...credentials, expiration: new Date(time + 600_000) };
+  let validations = 0;
+  const auth = createAwsAuth({
+    now: () => time,
+    loadLoginCredentials: async () => current, loadCredentials: missing,
+    validateCredentials: async () => { validations += 1; }, execute: unexpectedLogin,
+  });
+  const first = await auth.restore();
+  assert.equal(validations, 1);
+  time += 360_000;
+  current = { ...credentials, expiration: new Date(time + 3_600_000) };
+  const refreshed = await auth.restore();
+  assert.equal(validations, 2);
+  assert.notEqual(refreshed.expiresAt, first.expiresAt);
+  assert.equal(refreshed.expiresAt, current.expiration.toISOString());
+  assert.equal(refreshed.refreshable, true);
+});
+
+it('surfaces noninteractive validation failures without opening login or leaking provider errors', async () => {
+  const auth = createAwsAuth({
+    loadLoginCredentials: async () => credentials,
+    validateCredentials: async () => { throw new Error('private-provider-error'); },
+    execute: unexpectedLogin,
+  });
+  const status = await auth.restore();
+  assert.equal(status.status, 'failed');
+  assert.match(status.error, /connectivity and AWS account access/);
+  assert.doesNotMatch(JSON.stringify(status), /private-provider-error/);
 });
 
 it('opens browser login for expired KLAM credentials and shares concurrent credential requests', async () => {

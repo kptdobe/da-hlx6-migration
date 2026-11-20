@@ -139,14 +139,43 @@ AWS secrets into `.dev.vars`. Explicit browser sign-in takes precedence over
 copied credentials for the running UI session. SDK credential refresh reuses
 the browser session until reauthentication is required.
 
-The UI's **Sign in with AWS / KLAM** button starts login without running a
-migration; analysis and validation recheck authentication when needed.
-Only authentication status and actionable errors reach the browser, never AWS
-keys or session tokens. Network and storage authorization failures are not
+The UI restores usable saved sessions on first load, including after a server
+restart, without opening browser login. It checks the AWS providers and validates
+credentials with STS; missing or expired sessions require sign-in rather than
+opening an unsolicited login window. Successful AWS validation is cached until
+the next periodic check or near credential expiry. The UI's **Sign in with
+AWS / KLAM** button still explicitly starts a fresh browser login without running
+a migration; analysis and validation recheck authentication when needed.
+Only authentication status, expiry metadata and actionable errors reach the
+browser, never AWS keys or session tokens. Network and storage authorization failures are not
 silently treated as expired sessions. AWS and DA sign-in remain separate.
 Execution still assumes the existing migration role with the same scope tags;
 this feature does not change IAM trust or storage permissions. R2 access still
 requires the read-only credentials in `.dev.vars`.
+
+DA's `da-auth-helper` persists the Adobe token and its `expires_at` timestamp in
+`~/.aem/da-token.json`. Startup reuses an unexpired token with the helper's
+60-second clock-skew margin. Legacy cached tokens without expiry require sign-in.
+`DA_CONFIG_TOKEN` takes precedence unless a fresh browser login was explicitly
+requested for the running UI session. For an environment token, a JWT `exp` claim
+is used when available; opaque tokens show **Expiry unavailable**, never an
+invented lifetime. Expiry metadata is not proof of authorization: DA rejection
+or revoked site permissions still require corrective action.
+
+Session lifetimes are shown on the sign-in cards and throughout later workflow
+steps, with absolute local expiry times, remaining time and warnings for DA tokens
+with at most 30 minutes remaining. Status refreshes every 30 seconds when idle and
+with progress polling during a run. AWS expiry refers to the current credentials,
+not the overall browser-login session: SDK refresh can extend credentials only
+while that session remains valid, and its deadline is not provided. Copied AWS
+keys without expiry show **Expiry unavailable**; the internal 15-minute
+revalidation schedule is not presented as credential expiry.
+
+DA tokens cannot refresh silently, and a running job retains its initial token.
+Renew DA sign-in before a long run if the remaining lifetime is insufficient.
+Neither expiry display nor AWS refresh guarantees an uninterrupted migration.
+The tool adds no separate token store and never puts credentials in browser
+storage or reports.
 
 Standalone dump commands continue to use the standard AWS credential chain.
 To reuse the browser session with them, select its profile, for example
@@ -248,9 +277,15 @@ the server. It uses the same authentication helper and storage clients as the mi
 The guided workspace has five steps, with only the current step on screen:
 
 1. **Sign in** to DA / Adobe and AWS / KLAM. Both accounts must be connected
-   before starting analysis. Each button starts a fresh browser sign-in.
+   before starting analysis. Valid saved sessions are restored automatically.
+   Each sign-in button explicitly starts a fresh browser sign-in. Review the
+   displayed session lifetimes before a long run.
 2. **Select a site** using the source organization and site / repository name.
    Optionally choose a different destination and enter ignored folders, one per line.
+   The target site configuration must already exist. Create it manually before
+   starting analysis; this tool does not create site configurations. A target
+   configuration 404 stops preparation with this instruction. After creating it,
+   run analysis again.
 3. **First-pass analysis** loads aggregated site configurations and runs the
    listing-based inventory and path checks. It does not download source bodies;
    folder exclusions may require metadata requests. Review blockers, warnings,

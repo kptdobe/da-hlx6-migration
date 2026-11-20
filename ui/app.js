@@ -22,11 +22,15 @@ let following = false;
 let hasSelection = false;
 let displayedConfigs;
 let displayedReport;
+let refreshingAuth = false;
 
-const authenticated = () => currentAuth?.status === 'authenticated' && currentAwsAuth?.status === 'authenticated';
+const sessionReady = (auth) => auth?.status === 'authenticated'
+  && (!auth.expiresAt || Date.parse(auth.expiresAt) > Date.now() + 60_000);
+const authenticated = () => sessionReady(currentAuth) && sessionReady(currentAwsAuth);
 const active = () => currentJob?.status === 'running'
-  || currentAuth?.status === 'signing-in' || currentAwsAuth?.status === 'signing-in';
-const locked = () => active() || Boolean(pendingAction) || connectionError;
+  || ['signing-in', 'checking'].includes(currentAuth?.status)
+  || ['signing-in', 'checking'].includes(currentAwsAuth?.status);
+const locked = () => active() || Boolean(pendingAction) || connectionError || refreshingAuth;
 const analysisReport = () => currentJob?.fullValidation ? currentJob.analysisReport : currentJob?.report;
 
 function element(tag, text, className) {
@@ -135,8 +139,8 @@ function renderActivity() {
 function renderAuth(auth, aws = false) {
   if (!auth) return;
   const prefix = aws ? '#aws-auth' : '#auth';
-  const connected = auth.status === 'authenticated';
-  const signingIn = auth.status === 'signing-in';
+  const connected = sessionReady(auth);
+  const signingIn = ['signing-in', 'checking'].includes(auth.status);
   $(`${prefix}-message`).textContent = auth.message;
   $(`${prefix}-error`).hidden = !auth.error;
   $(`${prefix}-error`).textContent = auth.error ?? '';
@@ -145,6 +149,55 @@ function renderAuth(auth, aws = false) {
   badge.dataset.state = connected ? 'complete' : signingIn ? 'running' : auth.status === 'failed' ? 'failed' : 'idle';
   $(aws ? '#aws-sign-in' : '#sign-in').textContent = signingIn ? 'Signing in...'
     : connected ? 'Sign in again' : aws ? 'Sign in with AWS / KLAM' : 'Sign in with DA';
+  const lifetime = sessionLifetime(auth);
+  const refresh = aws && auth.refreshable
+    ? 'Automatic credential refresh is available while the saved AWS login session remains valid; its deadline is not provided.'
+    : aws ? 'Automatic refresh is not confirmed for this credential source.'
+      : 'DA tokens cannot renew silently during a run.';
+  $(`${prefix}-expiry`).textContent = `${lifetime.text} ${refresh}`;
+}
+
+function sessionLifetime(auth) {
+  if (!auth) return { text: 'Checking session lifetime.', warning: false };
+  const expires = Date.parse(auth.expiresAt);
+  if (!Number.isFinite(expires)) {
+    return { text: auth.status === 'authenticated' ? 'Expiry unavailable.' : 'Not connected.', warning: auth.status !== 'checking' };
+  }
+  const minutes = Math.max(0, Math.ceil((expires - Date.now()) / 60_000));
+  const remaining = minutes >= 60 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${minutes}m`;
+  const time = new Date(expires).toLocaleString(undefined, {
+    year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
+  });
+  return {
+    text: `${expires <= Date.now() ? 'Expired' : `Expires in ${remaining}`} (${time}).`,
+    warning: minutes <= 30,
+  };
+}
+
+function renderSessions() {
+  $('#session-status').hidden = step === 1;
+  for (const [selector, label, auth] of [
+    ['#da-session-summary', 'DA token', currentAuth],
+    ['#aws-session-summary', 'AWS credentials', currentAwsAuth],
+  ]) {
+    const lifetime = sessionLifetime(auth);
+    $(selector).textContent = `${label}: ${lifetime.text}${auth?.refreshable ? ' Auto-refresh available; login-session deadline unknown.' : ''}`;
+    $(selector).dataset.state = lifetime.warning ? 'warning' : 'idle';
+  }
+  const daExpiry = Date.parse(currentAuth?.expiresAt);
+  const warnings = [];
+  if (currentAuth?.status === 'authenticated'
+    && (!Number.isFinite(daExpiry) || daExpiry - Date.now() <= 30 * 60_000)) {
+    warnings.push(Number.isFinite(daExpiry)
+      ? 'DA token lifetime is short. Renew your DA sign-in before starting a long run.'
+      : 'DA token expiry is unavailable, so its lifetime cannot be guaranteed for a long run.');
+    warnings.push('A running job keeps its initial DA token and cannot renew it silently.');
+  }
+  if (step > 1 && !authenticated() && !active() && !pendingAction) {
+    warnings.push('Reconnect the required accounts in Sign in before starting another run. Your site selection is kept.');
+  }
+  $('#session-warning').hidden = !warnings.length;
+  $('#session-warning').textContent = warnings.join(' ');
 }
 
 function renderConfigs(configs) {
@@ -387,6 +440,7 @@ function renderWorkflow() {
   $('#context-target').textContent = currentJob?.target ?? '';
   renderAuth(currentAuth);
   renderAuth(currentAwsAuth, true);
+  renderSessions();
   renderActivity();
   if (step === 3) renderAnalysis();
   const runningDryRun = currentJob?.fullValidation && currentJob.status === 'running';
@@ -601,3 +655,18 @@ $('#run-dry-run').addEventListener('click', () => startPreparation(true));
 
 restoreSelection();
 await reconnect(true);
+window.setInterval(async () => {
+  if (active() || pendingAction || following || connectionError || refreshingAuth) return;
+  refreshingAuth = true;
+  renderWorkflow();
+  try {
+    [currentAuth, currentAwsAuth] = await Promise.all([request('/api/auth'), request('/api/aws-auth')]);
+    if (authenticated()) unlocked = Math.max(unlocked, 2);
+    renderWorkflow();
+  } catch (error) {
+    showError(error);
+  } finally {
+    refreshingAuth = false;
+    renderWorkflow();
+  }
+}, 30_000);

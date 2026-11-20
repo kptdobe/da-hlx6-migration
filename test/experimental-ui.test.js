@@ -24,6 +24,12 @@ async function start(t, options = {}) {
   const calls = [];
   const server = createExperimentalUiServer({
     tokenProvider: async () => 'private-test-token',
+    cachedTokenProvider: async () => null,
+    awsAuth: createAwsAuth({
+      loadLoginCredentials: async () => { throw Object.assign(new Error('No saved login'), { name: 'CredentialsProviderError' }); },
+      loadCredentials: async () => { throw Object.assign(new Error('No saved credentials'), { name: 'CredentialsProviderError' }); },
+      execute: () => { throw new Error('Must not start AWS CLI'); },
+    }),
     fetchImpl: async (url, init) => {
       calls.push({ url, init });
       return Response.json(config);
@@ -47,7 +53,7 @@ async function start(t, options = {}) {
   const finished = async (endpoint = '/api/prepare') => {
     for (let i = 0; i < 100; i += 1) {
       const job = await get(endpoint);
-      if (!['running', 'signing-in'].includes(job?.status)) return job;
+      if (!['running', 'signing-in', 'checking'].includes(job?.status)) return job;
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
     throw new Error('Preparation did not finish');
@@ -93,6 +99,69 @@ it('validates ignored folders and forwards them as repeatable CLI options', asyn
   ]);
 });
 
+it('restores persisted sessions on server restart and exposes expiry but never tokens or keys', async (t) => {
+  const expiresAt = new Date(Date.now() + 3_600_000).toISOString();
+  for (let restart = 0; restart < 2; restart += 1) {
+    let tokensRequested = 0;
+    const { get, post, finished, calls } = await start(t, {
+      cachedTokenProvider: async () => ({ token: 'private-saved-da-token', expiresAt, source: 'cache' }),
+      tokenProvider: async ({ browserLogin }) => {
+        assert.equal(browserLogin, false);
+        tokensRequested += 1;
+        return 'private-saved-da-token';
+      },
+      clearToken: () => { throw new Error('Must not clear a valid session'); },
+      awsAuth: createAwsAuth({
+        loadLoginCredentials: async () => ({
+          accessKeyId: 'private-saved-key', secretAccessKey: 'private-saved-secret',
+          sessionToken: 'private-saved-aws-token', expiration: new Date(expiresAt),
+        }),
+        validateCredentials: async () => {},
+        execute: () => { throw new Error('Must not start AWS CLI'); },
+      }),
+    });
+    const da = await get('/api/auth');
+    const aws = await get('/api/aws-auth');
+    assert.equal(da.status, 'authenticated');
+    assert.equal(aws.status, 'authenticated');
+    assert.equal(da.expiresAt, expiresAt);
+    assert.equal(aws.expiresAt, expiresAt);
+    assert.equal(da.refreshable, false);
+    assert.equal(aws.refreshable, true);
+    assert.equal(tokensRequested, 0);
+    assert.equal(calls.length, 0);
+    assert.equal(await get(), null);
+    assert.doesNotMatch(JSON.stringify([da, aws]), /private-saved|accessKeyId|secretAccessKey|sessionToken/);
+    await post({ source: 'org/site' });
+    assert.equal((await finished()).status, 'complete');
+    assert.equal(tokensRequested, 1);
+    assert.equal(calls[0].init.headers.authorization, 'Bearer private-saved-da-token');
+  }
+});
+
+it('reports expired sessions without interactive login or work and keeps unknown expiry explicit', async (t) => {
+  const { get } = await start(t, {
+    cachedTokenProvider: async () => ({
+      token: 'private-expired-token', expiresAt: new Date(0).toISOString(), source: 'cache',
+    }),
+    tokenProvider: () => { throw new Error('Must not start DA login'); },
+  });
+  const expired = await get('/api/auth');
+  assert.equal(expired.status, 'required');
+  assert.equal(expired.expiresAt, new Date(0).toISOString());
+  assert.equal((await get('/api/aws-auth')).status, 'required');
+  assert.equal(await get(), null);
+
+  const opaque = await start(t, {
+    cachedTokenProvider: async () => ({ token: 'private-opaque-token', expiresAt: null, source: 'environment' }),
+  });
+  const unknown = await opaque.get('/api/auth');
+  assert.equal(unknown.status, 'authenticated');
+  assert.equal(unknown.expiresAt, null);
+  assert.equal(unknown.refreshable, false);
+  assert.doesNotMatch(JSON.stringify(unknown), /private-opaque-token/);
+});
+
 it('authenticates, deduplicates identical sites, and runs only an inventory dry-run', async (t) => {
   let authenticated = false;
   let invocation;
@@ -136,7 +205,7 @@ it('offers explicit asynchronous sign-in without starting preparation and uses t
       return 'fresh-token';
     },
   });
-  assert.equal((await get('/api/auth')).status, 'unknown');
+  assert.equal((await get('/api/auth')).status, 'required');
   assert.equal((await post({}, {}, '/api/auth')).status, 202);
   assert.equal((await get('/api/auth')).status, 'signing-in');
   assert.equal(await get(), null);
@@ -178,7 +247,8 @@ it('offers asynchronous AWS browser sign-in, protects secrets, and shares the pr
       return reportFor(...args.slice(-2));
     },
   });
-  assert.equal((await get('/api/aws-auth')).status, 'unknown');
+  assert.equal((await get('/api/aws-auth')).status, 'authenticated');
+  assert.equal(logins, 0);
   assert.equal((await post({}, {}, '/api/aws-auth')).status, 202);
   assert.equal((await get('/api/aws-auth')).status, 'signing-in');
   assert.equal(await get(), null);
@@ -497,7 +567,55 @@ it('preserves source config and exposes destination authorization failures witho
   const job = await finished();
   assert.equal(job.status, 'failed');
   assert.match(job.error, /target\/site \(403\)/);
+  assert.match(job.error, /config:read permission/);
   assert.deepEqual(job.configs, { 'source/site': config });
+  assert.equal(ran, false);
+});
+
+it('instructs manual target config creation on 404 and permits retry after creation', async (t) => {
+  for (const sharedSite of [false, true]) {
+    let created = false;
+    let runs = 0;
+    const { post, get, finished } = await start(t, {
+      fetchImpl: async (url) => (!created && (sharedSite || url.includes('/target-org/'))
+        ? new Response('', { status: 404 }) : Response.json(config)),
+      runDryRun: async (args) => {
+        runs += 1;
+        return reportFor(...args.slice(-2));
+      },
+    });
+    const selection = { source: 'source/site', target: sharedSite ? 'source/site' : 'target-org/migrated' };
+    await post(selection);
+    const job = await finished();
+    assert.equal(job.status, 'failed');
+    assert.match(job.error, new RegExp(`Target site configuration for ${selection.target} does not exist \\(404\\)`));
+    assert.match(job.error, /Create the target site configuration manually before migration can proceed/);
+    assert.match(job.error, /then run analysis again/);
+    assert.match(job.error, /This tool does not create site configurations/);
+    assert.doesNotMatch(job.error, /sign-in|permission/);
+    assert.deepEqual(job.configs, sharedSite ? {} : { 'source/site': config });
+    assert.equal((await get('/api/auth')).status, 'authenticated');
+    assert.equal(runs, 0);
+
+    created = true;
+    await post(selection);
+    assert.equal((await finished()).status, 'complete');
+    assert.equal(runs, 1);
+  }
+});
+
+it('identifies a missing source config without suggesting target creation or sign-in', async (t) => {
+  let ran = false;
+  const { post, finished } = await start(t, {
+    fetchImpl: async () => new Response('', { status: 404 }),
+    runDryRun: async () => { ran = true; },
+  });
+  await post({ source: 'source/missing', target: 'target/site' });
+  const job = await finished();
+  assert.equal(job.status, 'failed');
+  assert.match(job.error, /Source site configuration for source\/missing does not exist \(404\)/);
+  assert.match(job.error, /Check the source organization and site \/ repository name/);
+  assert.doesNotMatch(job.error, /Create|sign-in|permission/);
   assert.equal(ran, false);
 });
 

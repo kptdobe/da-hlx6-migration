@@ -43,22 +43,34 @@ export function createAwsAuth({
   validateCredentials = (credentials) => validateAwsCredentials(credentials, region),
   execute = executeAws,
   onLogin = (message) => console.error(message),
+  now = Date.now,
 } = {}) {
   let state = { status: 'unknown', message: 'AWS authentication has not been checked. Sign in or prepare to authenticate.' };
   let pending;
   let useBrowserAuth = false;
+  let credentialInfo;
+  let nextCheckAt = 0;
 
   async function checked(load) {
     const credentials = await load();
     if (!credentials?.accessKeyId || !credentials.secretAccessKey) {
       throw new Error('AWS authentication returned incomplete credentials');
     }
-    if (credentials.expiration && credentials.expiration.getTime() <= Date.now()) {
+    if (credentials.expiration && credentials.expiration.getTime() <= now()) {
       throw Object.assign(new Error('AWS credentials have expired'), { name: 'ExpiredToken' });
     }
     await validateCredentials(credentials);
+    credentialInfo = {
+      expiresAt: credentials.expiration?.toISOString() ?? null,
+      refreshable: load === loadLoginCredentials,
+      checkedAt: new Date(now()).toISOString(),
+    };
+    nextCheckAt = Math.max(now() + 30_000, Math.min(
+      now() + REVALIDATION_LIFETIME,
+      credentials.expiration ? credentials.expiration.getTime() - 5 * 60_000 : Infinity,
+    ));
     // Copied KLAM credentials often omit expiration; revalidate them periodically.
-    return { ...credentials, expiration: credentials.expiration || new Date(Date.now() + REVALIDATION_LIFETIME) };
+    return { ...credentials, expiration: credentials.expiration || new Date(now() + REVALIDATION_LIFETIME) };
   }
 
   async function browserLogin() {
@@ -91,7 +103,7 @@ export function createAwsAuth({
     }
   }
 
-  async function obtainCredentials() {
+  async function obtainCredentials(interactive = true) {
     const providers = useBrowserAuth ? [loadLoginCredentials] : [loadLoginCredentials, loadCredentials];
     for (const load of providers) {
       try {
@@ -104,25 +116,37 @@ export function createAwsAuth({
         }
       }
     }
-    return browserLogin();
+    return interactive ? browserLogin() : undefined;
   }
 
-  function start(action) {
+  function start(action, restoring = false) {
     if (pending) return pending;
-    state = { status: 'signing-in', message: 'Checking AWS authentication; browser sign-in will open if needed.' };
+    state = { status: restoring ? 'checking' : 'signing-in', message: restoring
+      ? 'Validating the saved AWS session without opening sign-in.'
+      : 'Checking AWS authentication; browser sign-in will open if needed.' };
     pending = action().then((credentials) => {
-      state = { status: 'authenticated', message: 'AWS authentication completed. Storage permissions are checked when preparing.' };
+      state = credentials ? {
+        status: 'authenticated', message: 'AWS session connected and validated. Storage permissions are checked during analysis.',
+        ...credentialInfo,
+      } : { status: 'required', message: 'No valid saved AWS session found. Sign in with AWS / KLAM.' };
       return credentials;
     }).catch((error) => {
       state = { status: 'failed', message: 'AWS authentication failed. You can try again.', error: error.message };
-      throw error;
+      if (!restoring) throw error;
     }).finally(() => { pending = undefined; });
     return pending;
   }
 
   return {
-    credentials: () => start(obtainCredentials),
+    credentials: () => start(() => obtainCredentials()),
     signIn: () => start(browserLogin),
     getStatus: () => ({ ...state }),
+    async restore() {
+      if (!pending && (state.status === 'unknown'
+        || (state.status === 'authenticated' && now() >= nextCheckAt))) {
+        await start(() => obtainCredentials(false), true);
+      }
+      return { ...state };
+    },
   };
 }

@@ -43,6 +43,10 @@
         <div id="site-context" class="site-context" hidden aria-label="Selected migration">
           <div><small>DA source</small><strong id="context-source"></strong></div><span class="context-arrow" aria-hidden="true">&rarr;</span><div><small>HLX6 destination</small><strong id="context-target"></strong></div><span class="pill">Read-only</span>
         </div>
+        <div id="session-status" class="session-status" hidden aria-label="Session lifetimes">
+          <span id="da-session-summary"></span><span id="aws-session-summary"></span>
+        </div>
+        <p id="session-warning" class="notice" role="status" hidden></p>
         <div id="activity" class="activity" data-state="running" role="status" aria-live="polite" aria-atomic="true">
           <span id="activity-spinner" class="spinner" aria-hidden="true"></span>
           <div><strong id="activity-title">Connecting to your local workspace</strong><p id="status">Checking authentication and any active preparation.</p></div>
@@ -56,6 +60,7 @@
               <div class="card-heading"><span class="service-icon da-icon" aria-hidden="true">DA</span><span id="auth-badge" class="pill">Not connected</span></div>
               <h2>DA / Adobe</h2><p class="hint">Access site configuration and source content with your Adobe account.</p>
               <p id="auth-message" class="auth-message" role="status">Checking authentication...</p>
+              <p id="auth-expiry" class="hint session-expiry"></p>
               <p id="auth-error" class="notice error" role="alert" hidden></p>
               <button id="sign-in" type="button">Sign in with DA</button>
             </article>
@@ -63,11 +68,12 @@
               <div class="card-heading"><span class="service-icon aws-icon" aria-hidden="true">AWS</span><span id="aws-auth-badge" class="pill">Not connected</span></div>
               <h2>AWS / KLAM</h2><p class="hint">Use your operator session to inspect the HLX6 destination. No keys to copy.</p>
               <p id="aws-auth-message" class="auth-message" role="status">Checking authentication...</p>
+              <p id="aws-auth-expiry" class="hint session-expiry"></p>
               <p id="aws-auth-error" class="notice error" role="alert" hidden></p>
               <button id="aws-sign-in" type="button">Sign in with AWS / KLAM</button>
             </article>
           </div>
-          <details class="help"><summary>About sign-in and permissions</summary><p>Each sign-in opens a browser window. Finish there and return here. For AWS, select your KLAM operator console session; sign into KLAM first if needed. AWS CLI 2.32+ and local-development sign-in permission are required. Site and storage permissions are checked during analysis. Read-only R2 credentials must be configured on the local server.</p></details>
+          <details class="help"><summary>About sign-in and permissions</summary><p>Saved sessions are restored automatically when usable; no browser opens for this check. DA uses the helper's local token cache. AWS validates saved credentials and can refresh them while the saved login session remains valid. Its overall session deadline is not provided. DA tokens cannot refresh silently during a run.</p><p>Sign-in buttons explicitly open a fresh browser login. Finish there and return here. For AWS, select your KLAM operator console session; sign into KLAM first if needed. AWS CLI 2.32+ and local-development sign-in permission are required. Site and storage permissions are checked during analysis. Read-only R2 credentials must be configured on the local server.</p></details>
           <div class="step-footer"><p id="auth-hint" class="hint">Connect both accounts to continue.</p><button id="auth-continue" type="button" disabled>Select a site <span aria-hidden="true">&rarr;</span></button></div>
         </section>
 
@@ -124,6 +130,7 @@
             <ul class="check-list"><li>Download selected source content into a private local snapshot</li><li>Validate content, version history and destination ownership</li><li>Check project configuration and identify image upload candidates</li></ul>
             <div class="notice"><strong>This can take a while for large sites.</strong><p>It reads all selected source objects and uses local disk space. Keep the local server running. You can reload this page to reconnect.</p></div>
             <p class="hint">No remote content writes, image uploads or configuration changes. Snapshots and reports contain confidential site data and must be removed manually when no longer needed.</p>
+            <p class="hint">Check the session lifetimes above before starting. A running job uses its initial DA token and cannot renew it silently. AWS credential refresh depends on the saved login session still being valid.</p>
           </div>
           <div id="dry-run-progress" class="panel working-panel" hidden>
             <span class="working-symbol" aria-hidden="true">02</span><h2>Validating your migration plan</h2><p id="progress-phase">Starting full validation...</p>
