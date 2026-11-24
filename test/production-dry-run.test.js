@@ -1,6 +1,7 @@
 import { it } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { gunzipSync } from 'node:zlib';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -314,8 +315,11 @@ it('executes cross-org migrations with resolved bus IDs and target-only writes',
   const envKeys = ['S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY', 'S3_DEF_URL'];
   const previous = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
   await fs.writeFile(envFile, 'S3_ACCESS_KEY_ID=test\nS3_SECRET_ACCESS_KEY=test\nS3_DEF_URL=https://example.com\n');
+  const sourceUrl = 'https://content.da.live/source-org/source-site/library/blocks/columns';
+  const targetUrl = 'https://api.aem.live/target-org/sites/target-site/source/library/blocks/columns.html';
+  const unsupportedUrl = 'https://admin.da.live/copy/source-org/source-site/page.html';
   const da = fakeClient({
-    'source-org/source-site/My Page.html': { body: '<main>event<img src="https://images.example/fail.png"></main>', metadata: { id: 'source-document' } },
+    'source-org/source-site/My Page.html': { body: `<main><a href="${sourceUrl}">event</a><a href="${unsupportedUrl}">legacy</a><img src="https://images.example/fail.png"></main>`, metadata: { id: 'source-document' } },
     'source-org/source-site/unsupported.link': { body: 'linkdata' },
   });
   const configs = fakeClient({
@@ -368,6 +372,8 @@ it('executes cross-org migrations with resolved bus IDs and target-only writes',
             }
             assert.equal(command.constructor.name, 'PutObjectCommand');
             assert.equal(command.input.Key, 'target-org/target-site/My Page.html');
+            assert.ok(gunzipSync(command.input.Body).toString().includes(`href="${targetUrl}"`));
+            assert.ok(gunzipSync(command.input.Body).toString().includes(`href="${unsupportedUrl}"`));
             writes.push(command.input.Key);
             return {};
           },
@@ -377,8 +383,13 @@ it('executes cross-org migrations with resolved bus IDs and target-only writes',
       fetchImpl: async (url, options = {}) => {
         apiCalls.push({ url, method: options.method || 'GET' });
         if (url === 'https://images.example/fail.png') return { ok: false, status: 403 };
+        if (options.method === 'POST') {
+          assert.deepEqual(JSON.parse(options.body), { data: [
+            { key: 'test', value: targetUrl }, { key: 'legacy', value: unsupportedUrl },
+          ] });
+        }
         return { ok: true, json: async () => (url.startsWith('https://admin.da.live/')
-          ? { data: [{ key: 'test', value: 'value' }] } : {}) };
+          ? { data: [{ key: 'test', value: sourceUrl }, { key: 'legacy', value: unsupportedUrl }] } : {}) };
       },
     });
     downloadedSource = report.sourceDump;
@@ -394,6 +405,10 @@ it('executes cross-org migrations with resolved bus IDs and target-only writes',
     assert.ok(messages.includes('SKIPPED unsupported-extension: source-org/source-site/unsupported.link'));
     assert.deepEqual(writes, ['target-org/target-site/My Page.html']);
     assert.equal(report.projectConfig.status, 'written');
+    assert.deepEqual(report.urlRewrites, [{ key: 'source-org/source-site/My Page.html', url: sourceUrl, targetUrl }]);
+    assert.deepEqual(report.projectConfig.urlRewrites, [{ url: sourceUrl, targetUrl }]);
+    assert.equal(report.warnings.find(({ id }) => id === 'unrewritten-da-urls').count, 1);
+    assert.equal(report.warnings.find(({ id }) => id === 'unrewritten-da-config-urls').count, 1);
     assert.deepEqual(apiCalls.map(({ method }) => method), ['GET', 'GET', 'GET', 'GET', 'GET', 'POST']);
     assert.equal(apiCalls[0].url, 'https://admin.da.live/config/source-org/source-site');
     assert.equal(apiCalls.at(-1).url, 'https://api.aem.live/target-org/sites/target-site/config/editor/da.json');
@@ -407,6 +422,7 @@ it('executes cross-org migrations with resolved bus IDs and target-only writes',
     assert.match(messages.at(-1), /Migration succeeded in/);
     assert.match(messages.at(-1), /1 object written.*0 overwritten, 1 newly created/);
     assert.match(messages.at(-1), /original URLs retained/);
+    assert.match(messages.at(-1), /2 DA URL rewrites.*applied/);
     assert.match(messages.at(-1), /\.\/tmp\//);
   } finally {
     if (downloadedSource) await fs.rm(downloadedSource, { recursive: true, force: true });

@@ -37,6 +37,19 @@ it('formats blocked and partial execution without claiming success', () => {
   assert.doesNotMatch(summary, /Migration succeeded/);
 });
 
+it('distinguishes image URL fallbacks and planned versus applied content/config rewrites', () => {
+  const report = {
+    imageErrors: [{ action: 'kept-original-url' }, { action: 'rewritten-to-source-api' }],
+    urlRewrites: [{}], projectConfig: { status: 'written', urlRewrites: [{}] },
+  };
+  const summary = formatMigrationSummary(report);
+  assert.match(summary, /1 original URLs retained; 1 DA URLs rewritten/);
+  assert.match(summary, /2 DA URL rewrites.*applied/);
+  const dryRun = formatMigrationSummary({ ...report, dryRun: true });
+  assert.match(dryRun, /2 DA URL rewrites.*planned/);
+  assert.doesNotMatch(dryRun, /DA URL rewrites.*applied/);
+});
+
 it('formats listing-only dry-run results without claiming writes or uploads', () => {
   const summary = formatMigrationSummary({
     dryRun: true, validation: 'inventory',

@@ -232,13 +232,44 @@ delete existing source or target objects.
 
 ### Project config and images
 
-Project config is read from `https://admin.da.live/config/{source-org}/{da-site}` and rewritten into `editor.da` of the target site's `config.json`, using a property-only `POST` to `https://api.aem.live/{target-org}/sites/{hlx6-site}/config/editor/da.json`. Top-level properties starting with `:` (including `:properties`) are excluded. Each sheet is replaced by its own `data` array, preserving its name and row values; sheet wrappers (`total`, `limit`, `offset`, `:colWidths`, etc.) are discarded. For example, `{ "data": { "data": [...] }, "alex": { "data": [...] } }` becomes `{ "data": [...], "alex": [...] }` under `editor.da`. Sheets without a data array are rejected. Other target settings are preserved. Missing DA config is skipped; identical target row arrays are resumable; different existing sheet rows are rejected. Previously migrated configs containing metadata or sheet wrappers are converted only when their rows match the source. Full-validation dry runs only read and report the planned config migration.
+Project config is read from `https://admin.da.live/config/{source-org}/{da-site}` and rewritten into `editor.da` of the target site's `config.json`, using a property-only `POST` to `https://api.aem.live/{target-org}/sites/{hlx6-site}/config/editor/da.json`. Top-level properties starting with `:` (including `:properties`) are excluded. Each sheet is replaced by its own `data` array, preserving its name and row values except for same-site DA URL rewrites described below; sheet wrappers (`total`, `limit`, `offset`, `:colWidths`, etc.) are discarded. For example, `{ "data": { "data": [...] }, "alex": { "data": [...] } }` becomes `{ "data": [...], "alex": [...] }` under `editor.da`. Sheets without a data array are rejected. Other target settings are preserved. Missing DA config is skipped; identical target row arrays are resumable; unrelated differences in existing sheet rows are rejected. Previously migrated configs containing metadata, sheet wrappers or legacy URLs are converted only when their rows match the source after URL rewriting. Full-validation dry runs only read and report the planned config migration.
 
-The DA auth token is captured without printing it. Supply a helper-issued `DA_CONFIG_TOKEN` in the local environment file to override the local helper. Confirm that the authenticated identity has all required permissions before execution. Config conflicts are checked before content writes, and the config is written after content migration succeeds. The run report includes `projectConfig` status and API URLs, not config contents or credentials.
+The DA auth token is captured without printing it. Supply a helper-issued `DA_CONFIG_TOKEN` in the local environment file to override the local helper. Confirm that the authenticated identity has all required permissions before execution. Config conflicts are checked before content writes, and the config is written after content migration succeeds. The private run report includes `projectConfig` status, URL rewrites and warnings, not full config contents or authentication headers. References may contain sensitive URL parameters; protect reports like source snapshots.
+
+### Same-site DA URLs
+
+Editor settings and transferred HTML, JSON and SVG (including trash and version
+snapshots) rewrite absolute HTTP(S) and protocol-relative URLs on the exact
+`admin.da.live` and `content.da.live` hosts when their owner/site matches the
+source. The destination owner/site is used, including cross-owner migrations:
+
+| Legacy URL path | Destination path under `https://api.aem.live/{target-org}/sites/{hlx6-site}` |
+|---|---|
+| `content.da.live/{source-org}/{da-site}/{path}` | `/source/{path}`; extensionless documents gain `.html`, directories gain `index.html` |
+| `admin.da.live/source/{source-org}/{da-site}/{path}` | `/source/{path}` |
+| `admin.da.live/list/{source-org}/{da-site}/{folder}` | `/source/{folder}/` |
+| `admin.da.live/config/{source-org}/{da-site}` | `/config/editor/da.json` |
+
+Queries, fragments and encoded paths are retained. References to other sites or
+owners, org-level URLs, published `aem.page`/`aem.live` URLs and binary media stay
+unchanged. Unmappable same-site admin routes (such as UUID versions or copy/move)
+remain unchanged with `unrewritten-da-urls` / `unrewritten-da-config-urls` warnings;
+these still require client changes. A URL rewrite does not adapt request bodies
+or response formats.
+
+Full-validation dry runs report planned content `urlRewrites` and
+`projectConfig.urlRewrites`; inventory-only dry runs skip URL discovery.
+Execution reports content rewrites after image handling. Source snapshots,
+original-body ownership hashes, unchanged JSON formatting and numeric literals
+are preserved; only affected JSON string tokens are re-encoded.
+Invalid JSON string escapes fail full validation with the source key rather than
+writing a corrupted rewrite.
 
 Image uploads follow the target site's API keep rules. Failed image fetches or
-uploads preserve their original URLs and are reported individually as warnings;
-successful uploads are rewritten. Progress and reports retain completed write
+uploads retain their references, with same-site DA URLs rewritten to the source
+API, and are reported individually as warnings; successful uploads retain the
+existing `./media_...` rewrite. Images are fetched using original URLs before
+general DA URL rewriting. Progress and reports retain completed write
 and image counts if a later operation fails.
 
 ### Audit history

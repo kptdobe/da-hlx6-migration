@@ -84,6 +84,88 @@ describe('inspectDestination', () => {
 });
 
 describe('runMigration', () => {
+  it('rewrites current/trash/version text at transfer time, preserving plans, bytes and source hashes', async () => {
+    const sourceUrl = 'https://content.da.live/adobecom/sample-content-da/library/blocks/columns';
+    const targetUrl = 'https://api.aem.live/kptdobe/sites/sample-content-hlx6-migrated/source/library/blocks/columns.html';
+    const rows = [
+      ['/index.html', `<a href="${sourceUrl}">Columns</a>`],
+      ['/library/blocks.json', JSON.stringify({ data: [{ path: sourceUrl }] })],
+      ['/.trash/blocks.json', JSON.stringify({ path: sourceUrl })],
+      ['/.da-versions/doc-id/v1.html', `<a href="${sourceUrl}">Old columns</a>`],
+      ['/icons/a.svg', `<svg><a href="${sourceUrl}"/></svg>`],
+      ['/binary.pdf', Buffer.concat([Buffer.from([0, 255]), Buffer.from(sourceUrl)])],
+    ].map(([rel, body]) => ({
+      key: `adobecom/sample-content-da${rel}`, rel, ...classifyDa(rel), body: Buffer.from(body), metadata: {},
+    }));
+    const writeScope = { ...scope, daOrg: 'adobecom', write: [{ bucket: 'helix-source-bus', prefix: 'kptdobe/sample-content-hlx6-migrated/' }] };
+    const plan = buildMigrationPlan(rows, writeScope);
+    assert.equal(plan.urlRewrites.length, 5);
+    const client = fakeClient();
+    const dryRun = await runMigration(plan, {
+      client, scope: writeScope, fetchImpl: () => { throw new Error('Dry run must not fetch or write'); },
+    });
+    assert.deepEqual(dryRun.urlRewrites, plan.urlRewrites);
+    assert.equal(client.writes.length, 0);
+    const result = await runMigration(plan, { client, scope: writeScope, execute: true });
+    assert.equal(result.urlRewrites.length, 5);
+    for (const written of client.writes) {
+      const original = plan.objects.find(({ key }) => key === written.Key);
+      const source = rows.find(({ key }) => key === original.sourceKey);
+      assert.equal(original.body, source.body);
+      const body = written.ContentEncoding === 'gzip' ? gunzipSync(written.Body) : written.Body;
+      assert.equal(written.Metadata['uncompressed-length'], String(body.length));
+      assert.equal(written.Metadata['da-source-sha256'], createHash('sha256').update(source.body).digest('hex'));
+      if (written.ContentType === 'application/pdf') assert.deepEqual(body, source.body);
+      else {
+        assert.ok(body.toString().includes(targetUrl));
+        assert.ok(!body.toString().includes(sourceUrl));
+      }
+    }
+    const heads = Object.fromEntries(client.writes.map(({ Key, Metadata }) => [Key, Metadata]));
+    const statuses = await inspectDestination(fakeClient(client.writes.map(({ Key }) => Key), heads), writeScope, plan.objects);
+    assert.ok([...statuses.values()].every((status) => status === 'exists'));
+  });
+
+  it('recognizes original-body ownership during a conditional-write race after URL rewriting', async () => {
+    const body = Buffer.from('<a href="https://content.da.live/kptdobe/sample-content-da/page">Page</a>');
+    const doc = { ...object, body };
+    const client = fakeClient([], { [doc.key]: {
+      'da-id': 'doc-id', 'da-source-sha256': createHash('sha256').update(body).digest('hex'),
+    } });
+    const send = client.send;
+    client.send = async (command) => {
+      if (command.constructor.name === 'PutObjectCommand') {
+        throw Object.assign(new Error('Precondition failed'), { $metadata: { httpStatusCode: 412 } });
+      }
+      return send(command);
+    };
+    const result = await runMigration({ objects: [doc] }, {
+      client, scope: { ...scope, write: [{ bucket: 'helix-source-bus', prefix: 'kptdobe/sample-content-hlx6-migrated/' }] },
+      execute: true,
+    });
+    assert.deepEqual(result.results, [{ key: doc.key, status: 'exists', kind: 'doc' }]);
+  });
+
+  it('uses the migrated source URL when a same-site DA image upload fails', async () => {
+    const url = 'https://content.da.live/kptdobe/sample-content-da/image.jpg';
+    const targetUrl = 'https://api.aem.live/kptdobe/sites/sample-content-hlx6-migrated/source/image.jpg';
+    const body = Buffer.from(`<img src="${url}">`);
+    const client = fakeClient();
+    const result = await runMigration({ objects: [{ ...object, body }] }, {
+      client, scope: { ...scope, write: [{ bucket: 'helix-source-bus', prefix: 'kptdobe/sample-content-hlx6-migrated/' }] },
+      execute: true, mediaToken: 'test-token',
+      fetchImpl: async (requested) => {
+        assert.equal(requested, url);
+        return new Response(null, { status: 403 });
+      },
+    });
+    assert.equal(result.imageErrors[0].action, 'rewritten-to-source-api');
+    assert.equal(result.imageErrors[0].targetUrl, targetUrl);
+    assert.equal(gunzipSync(client.writes[0].Body).toString(), `<img src="${targetUrl}">`);
+    assert.deepEqual(result.urlRewrites, [{ key: object.key, url, targetUrl }]);
+    assert.equal(client.writes[0].Metadata['da-source-sha256'], createHash('sha256').update(body).digest('hex'));
+  });
+
   it('writes converted active/archive logs after snapshots and supports ownership checks on reruns', async () => {
     const rows = [
       ['/index.html', '<main>current</main>', { id: 'doc-id' }],
@@ -305,6 +387,7 @@ describe('runMigration', () => {
     const written = gunzipSync(client.writes[0].Body).toString();
     assert.ok(written.includes('src="./media_abc.jpg"'));
     assert.ok(written.includes(`src="${external}"`));
+    assert.deepEqual(result.urlRewrites, []);
   });
 
   it('finishes writing versions before starting current documents', async () => {

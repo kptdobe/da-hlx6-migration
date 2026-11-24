@@ -4,6 +4,7 @@ import processQueue from '@adobe/helix-shared-process-queue';
 import { listAll, headObject, putObject } from './storage.js';
 import { collectExternalImageUrls, rewriteImageUrls } from './migration.js';
 import { uploadImage } from './media-upload.js';
+import { rewriteDaBody, rewriteDaUrls } from './da-urls.js';
 
 const SOURCE_BUCKET = 'helix-source-bus';
 const IMAGE_CONCURRENCY = 4;
@@ -92,10 +93,15 @@ async function prepareImages(objects, { scope, mediaToken, daSourceToken, fetchI
       replacements.set(url, uploaded.relativeUrl);
       onImageUploaded(url);
     } catch (error) {
-      const failure = { url, error: error.message, sourceKeys: [...references.get(url)], action: 'kept-original-url' };
+      const { value: targetUrl } = rewriteDaUrls(url, scope);
+      const action = targetUrl === url ? 'kept-original-url' : 'rewritten-to-source-api';
+      const failure = {
+        url, error: error.message, sourceKeys: [...references.get(url)], action,
+        ...(targetUrl !== url && { targetUrl }),
+      };
       imageErrors.push(failure);
       onImageError(failure);
-      onProgress({ phase: 'Image upload failed; keeping original URL', key: url, status: 'kept-original-url' });
+      onProgress({ phase: `Image upload failed; ${action}`, key: url, status: action });
     }
     completed += 1;
     onProgress({ phase: 'Uploading images', completed, total });
@@ -103,13 +109,22 @@ async function prepareImages(objects, { scope, mediaToken, daSourceToken, fetchI
   return { replacements, imageErrors, urls };
 }
 
+/**
+ * Applies successful image uploads, then DA URL rewrites, retaining original-body provenance.
+ * @param {object} object Planned source object.
+ * @param {Map<string,string>} replacements Successful image URL replacements.
+ * @param {object} scope Migration scope.
+ * @returns {object} Prepared body, byte length, source hash and applied URL rewrites.
+ */
 function prepareObject(object, replacements, scope) {
-  const body = object.contentType === 'text/html'
+  const imageBody = object.contentType === 'text/html'
     ? Buffer.from(rewriteImageUrls(object.body.toString('utf8'), replacements, scope.org, scope.hlx6Site))
     : object.body;
+  const { body, rewrites } = rewriteDaBody({ ...object, body: imageBody }, scope);
   return {
     ...object,
     body,
+    urlRewrites: rewrites.map((item) => ({ key: object.sourceKey || object.key, ...item })),
     metadata: {
       ...object.metadata,
       'uncompressed-length': String(body.length),
@@ -148,6 +163,9 @@ export async function runMigration(plan, {
         .flatMap((object) => collectExternalImageUrls(object.body.toString('utf8'), scope.org, scope.hlx6Site)))],
       imageErrors: [],
       objects: plan.objects.length,
+      urlRewrites: plan.urlRewrites || plan.objects.flatMap((object) => (
+        rewriteDaBody(object, scope).rewrites.map((item) => ({ key: object.sourceKey || object.key, ...item }))
+      )),
     };
   }
 
@@ -185,7 +203,7 @@ export async function runMigration(plan, {
       } catch (error) {
         if (error.$metadata?.httpStatusCode === 412) {
           const head = await headObject(client, SOURCE_BUCKET, object.key);
-          if (belongsToMigration(head, object)) {
+          if (belongsToMigration(head, plan.objects.find(({ key }) => key === object.key))) {
             written(object, 'exists');
             return { key: object.key, status: 'exists', kind: object.kind };
           }
@@ -201,6 +219,7 @@ export async function runMigration(plan, {
     imageUrls: urls,
     uploadedImageUrls: [...replacements.keys()],
     imageErrors,
+    urlRewrites: objects.flatMap((object) => object.urlRewrites),
     objects: plan.objects.length,
     results,
   };

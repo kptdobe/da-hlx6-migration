@@ -30,18 +30,26 @@ The migration writes these metadata keys **now**, so no second pass is needed on
 
 | # | da object | hlx6 key | Body | hlx6 metadata | Notes |
 |---|---|---|---|---|---|
-| R1 | `{o}/{s}{p}.html` | `{o}/{s}{toHlx6Path(p)}.html` | rewrite images (R9), gzip | common (§3) | |
-| R2 | `{o}/{s}{p}.json` | idem `.json` | as-is, gzip | common | byte-identical after gunzip |
-| R3 | `{o}/{s}{p}.{avif,gif,ico,jpeg,jpg,mp4,pdf,png,svg}` | idem | raw bytes, uncompressed; do not set `Content-Encoding: gzip` | common | AVIF uses `image/avif`; even if the source sample object is gzip-encoded, decode before migration |
+| R1 | `{o}/{s}{p}.html` | `{o}/{s}{toHlx6Path(p)}.html` | rewrite images (R9), then same-site DA URLs (R13), gzip | common (§3) | |
+| R2 | `{o}/{s}{p}.json` | idem `.json` | rewrite same-site DA URLs in string tokens (R13), gzip | common | other bytes, including numeric precision and formatting, preserved |
+| R3 | `{o}/{s}{p}.{avif,gif,ico,jpeg,jpg,mp4,pdf,png,svg}` | idem | raw bytes except SVG URL rewrites (R13), uncompressed; do not set `Content-Encoding: gzip` | common | AVIF uses `image/avif`; even if the source sample object is gzip-encoded, decode before migration |
 | R4 | `{o}/{s}{f}.props` | `{o}/{s}{toHlx6Path(f)}/.props` | `{}`, gzip, `application/json` | common | only where da has a marker; implicit folders stay implicit |
 | R5 | `{o}/{s}/.trash/{name}` | `{o}/{s}/.trash/{name}` (keep the dated name) | per R1-R4 | common + `doc-path` = `/` + `sitePath(path)` | `doc-id` kept from the same da `id`, so its versions stay attached |
-| R6 | `.da-versions/{id}/{vid}.{ext}` | `{o}/{s}/.versions/{docId(id)}/{versionUlid}` (no extension) | preserve raw body; text may be gzip-encoded, binary media remains uncompressed | §4 | |
+| R6 | `.da-versions/{id}/{vid}.{ext}` | `{o}/{s}/.versions/{docId(id)}/{versionUlid}` (no extension) | text follows URL/image rewrites; binary media remains unchanged and uncompressed | §4 | |
 | R7 | `.da-versions/{id}/` with no live or trash doc | same as R6 (orphan versions) | | §4 | hlx6 behaves the same after the trash is emptied |
 | R8 | `.da-versions/{id}/audit*.txt` | `{o}/{s}/.versions/{docId(id)}/audit/{segment}.jsonl` | TSV to JSONL v1, gzip, `application/x-ndjson` | `doc-id`, `da-id`, `uncompressed-length` | active + archives, including orphan histories; see §4.1 |
-| R9 | `<img src>`, `<source srcset>` in html | - | use API target keep rules; upload other image URLs including DA content URLs; rewrite successes to `./media_{hash}.{ext}`; keep failures unchanged | - | errors and source-page references logged; migration continues (§8) |
+| R9 | `<img src>`, `<source srcset>` in html | - | use API target keep rules; upload other image URLs including DA content URLs; rewrite successes to `./media_{hash}.{ext}`; failures follow R13 | - | errors and source-page references logged; migration continues (§8) |
 | R10 | `.da/**` | ordinary path mapping under `{o}/{s}/.da/` | per R1-R4 | common | no folder-specific exception or exclusion |
 | R11 | `.da/comments/**` | ordinary path mapping per R10 | JSON per R2 | common | data copied; no comment-ID reattachment or comment UI support |
 | R12 | unsupported extensions, `*.ext.props` sidecars | not migrated | - | - | warning, independent of folder name; unsupported objects are listed with an exclusion reason and never written |
+| R13 | same-source-owner/site URLs on `admin.da.live` or `content.da.live` | destination API source/config routes | rewrite in editor config, HTML, JSON and SVG, including trash/versions | update `uncompressed-length`; keep original `da-source-sha256` | other sites/owners, org-level URLs, published URLs and binaries untouched; unmappable admin routes retained with warnings |
+
+R13 maps DA content paths to `/source/` (adding `.html` or directory `index.html`
+where needed), admin `/source/` directly, admin `/list/` to a trailing-slash source
+folder and site `/config/` to `/config/editor/da.json`. Queries, fragments and
+encoded paths are retained. UUID version and copy/move URLs cannot be translated
+by URL alone. See [Same-site DA URLs](../README.md#same-site-da-urls) for report fields
+and config conflict rules. Generated audit records are not URL-rewritten.
 
 ## 3. Common metadata (current and trashed objects)
 
@@ -123,6 +131,7 @@ Implemented in `bin/preflight.js`.
 | File property sidecars with no mapping | warning |
 | Malformed audit records (full validation only) | warning; log original records for analysis and skip them |
 | Audit snapshots not migrated (full validation only) | warning; retain events without snapshot links |
+| Same-site admin URLs without a URL-only API mapping (full validation only) | warning; retain URLs and report affected references |
 
 ## 6. Execution invariants
 - Pre-flight first. A blocking check stops the run unless explicitly acknowledged.
@@ -133,7 +142,7 @@ Implemented in `bin/preflight.js`.
 
 ## 7. Verification
 - Counts per kind: da current + trash = hlx6 current + trash; da versions = hlx6 versions
-- Body equality per object after gunzip (html: after image-URL normalization)
+- Body equality per object after gunzip, accounting for reported same-site DA URL rewrites and HTML image replacements
 - Per doc: version count and ULID order match the audit order
 - Audit record counts include active and archived segments on both sides; HLX6 totals equal DA totals minus malformed records reported as skipped
 - Sample preview through `api.aem.live` for N random documents
@@ -153,8 +162,8 @@ The hash is `"1" + sha1(contentLength + first 8 KiB)` (`src/media.js` `mediaHash
 ### Per image
 1. Keep the api-service target prefixes: main target `.aem.page/` and `.aem.live/`, `./media_`, and HTTPS `/adobe/dynamicmedia/deliver/` URLs on any host. Other image references are upload candidates; this includes `https://content.da.live/{source-org}/{source-site}/...`. The migration parses each `srcset` candidate individually.
 2. Fetch candidates and POST their bytes to the target media API, which handles hash deduplication. Send the DA token only to the exact `https://content.da.live` origin, never to lookalike hosts or third parties.
-3. Rewrite only successful uploads to the returned relative media path. Failed URLs and kept-prefix URLs remain unchanged.
-4. Individual fetch/upload failures do not block migration: record each URL, error, source keys, and `kept-original-url` action in `imageErrors` and warning entries. This deliberately differs from api-service POST's HTTP 400 on failure. Missing media credentials remain a fatal setup error.
+3. Rewrite successful uploads to the returned relative media path, then apply R13. Failed same-site DA URLs point to the migrated source API; other failed URLs and kept-prefix URLs remain unchanged.
+4. Individual fetch/upload failures do not block migration: record each URL, error, source keys, and `kept-original-url` or `rewritten-to-source-api` action (with `targetUrl`) in `imageErrors` and warning entries. This deliberately differs from api-service POST's HTTP 400 on failure. Missing media credentials remain a fatal setup error.
 
 ### Why the API and not a direct media-bus write
 - Same validation as an author upload (size limits, SVG sanitization), so we never store a file hlx6 would refuse.

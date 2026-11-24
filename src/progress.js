@@ -1,5 +1,11 @@
 import path from 'node:path';
 
+/**
+ * Summarizes completed writes, planned/applied URL changes, image errors and retained snapshots.
+ * @param {object} report Migration report.
+ * @param {string} cwd Base directory for displaying local snapshot paths.
+ * @returns {string} User-facing Markdown summary.
+ */
 export function formatMigrationSummary(report, cwd = process.cwd()) {
   const plural = (count, singular, multiple = `${singular}s`) => `${count.toLocaleString('en-US')} ${count === 1 ? singular : multiple}`;
   const elapsed = Math.max(0, Math.round((Date.parse(report.finishedAt) - Date.parse(report.startedAt)) / 1000) || 0);
@@ -26,8 +32,13 @@ export function formatMigrationSummary(report, cwd = process.cwd()) {
     lines.push(`- **${plural(written.length, 'object')} written${counts ? ':' : ''}**${counts}.`);
     const uploaded = report.uploadedImageUrls?.length || 0;
     const errors = report.imageErrors?.length || 0;
-    lines.push(`- **${plural(uploaded, 'image')} uploaded**, ${errors ? `**${plural(errors, 'image error')}**; original URLs retained` : 'no image errors'}.`);
+    const rewritten = (report.imageErrors || []).filter(({ action }) => action === 'rewritten-to-source-api').length;
+    const retained = rewritten ? `${errors - rewritten} original URLs retained; ${rewritten} DA URLs rewritten` : 'original URLs retained';
+    lines.push(`- **${plural(uploaded, 'image')} uploaded**, ${errors ? `**${plural(errors, 'image error')}**; ${retained}` : 'no image errors'}.`);
   }
+  const configRewrites = report.projectConfig?.status === 'exists' ? 0 : (report.projectConfig?.urlRewrites?.length || 0);
+  const urlRewrites = (report.urlRewrites?.length || 0) + configRewrites;
+  if (urlRewrites) lines.push(`- **${plural(urlRewrites, 'DA URL rewrite')}**${report.dryRun || blockers.length ? ' planned' : ' applied'} in content and editor config.`);
   const config = {
     exists: 'Project config already matched', written: 'Project config written',
     planned: report.dryRun ? 'Project config change planned' : 'Project config not written',

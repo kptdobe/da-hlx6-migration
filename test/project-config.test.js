@@ -71,6 +71,53 @@ function api(source = daConfig, target = targetConfig) {
 }
 
 describe('migrateProjectConfig', () => {
+  it('rewrites Library and other config references, repairs URL-only differences and is resumable', async () => {
+    const source = {
+      library: { data: [
+        { title: 'Blocks', path: 'https://content.da.live/kptdobe/sample-content-da/library/blocks.json' },
+        { title: 'Icons', path: 'https://content.da.live/kptdobe/sample-content-da/library/icons.json' },
+        { title: 'Tags', path: 'https://main--shared--kptdobe.aem.page/tools/tags/' },
+      ] },
+      prepare: [{ key: 'tool', value: { config: 'https://admin.da.live/config/kptdobe/sample-content-da' } }],
+    };
+    const expected = {
+      library: [
+        { title: 'Blocks', path: 'https://api.aem.live/kptdobe/sites/sample-content-hlx6/source/library/blocks.json' },
+        { title: 'Icons', path: 'https://api.aem.live/kptdobe/sites/sample-content-hlx6/source/library/icons.json' },
+        source.library.data[2],
+      ],
+      prepare: [{ key: 'tool', value: { config: 'https://api.aem.live/kptdobe/sites/sample-content-hlx6/config/editor/da.json' } }],
+    };
+    const previousConfig = structuredClone(source);
+    previousConfig.library.data[0].path = expected.library[0].path;
+    const fake = api(source, { editor: { other: true, da: previousConfig } });
+    const dryRun = await migrateProjectConfig({ scope, configToken: 'aem-token', ...fake });
+    assert.equal(dryRun.status, 'planned');
+    assert.equal(dryRun.urlRewrites.length, 3);
+    assert.equal(fake.calls.length, 2);
+    assert.deepEqual(fake.target.editor.da, previousConfig);
+    const written = await migrateProjectConfig({ scope, execute: true, configToken: 'aem-token', ...fake });
+    assert.equal(written.status, 'written');
+    assert.deepEqual(fake.target.editor, { other: true, da: expected });
+    const repeated = await migrateProjectConfig({ scope, execute: true, configToken: 'aem-token', ...fake });
+    assert.equal(repeated.status, 'exists');
+    assert.equal(fake.calls.filter(({ method }) => method === 'POST').length, 1);
+    fake.target.editor.da.library[0].title = 'Changed by customer';
+    await assert.rejects(migrateProjectConfig({ scope, execute: true, configToken: 'aem-token', ...fake }), /different config/);
+    assert.equal(fake.calls.filter(({ method }) => method === 'POST').length, 1);
+    assert.equal(source.library.data[0].path, 'https://content.da.live/kptdobe/sample-content-da/library/blocks.json');
+  });
+
+  it('reports unsupported config URLs without blocking or silently replacing them', async () => {
+    const url = 'https://admin.da.live/move/kptdobe/sample-content-da/page.html';
+    const fake = api({ apps: [{ title: 'Legacy tool', path: url }] }, {});
+    const result = await migrateProjectConfig({ scope, execute: true, configToken: 'aem-token', ...fake });
+    assert.equal(result.status, 'written');
+    assert.equal(result.warnings[0].id, 'unrewritten-da-config-urls');
+    assert.equal(result.warnings[0].items[0].url, url);
+    assert.deepEqual(fake.target.editor.da, { apps: [{ title: 'Legacy tool', path: url }] });
+  });
+
   it('copies site config to editor.da without changing other target properties', async () => {
     const fake = api(daConfig, structuredClone(targetConfig));
     const result = await migrateProjectConfig({

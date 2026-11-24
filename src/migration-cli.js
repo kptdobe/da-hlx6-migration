@@ -190,6 +190,7 @@ export async function migrateCli(args, {
       { id: 'destination-ownership', reason: 'Requires migration hashes and target ownership metadata' },
       { id: 'external-images', reason: 'API-compatible image upload selection requires parsing HTML bodies' },
       { id: 'project-config', reason: 'Project config comparison is part of --full-validation' },
+      { id: 'da-url-rewrites', reason: 'Same-site DA URL discovery requires source bodies and project config; use --full-validation' },
     ] }),
   };
   try {
@@ -378,6 +379,7 @@ export async function migrateCli(args, {
     const plan = await progress.run('Building migration plan', () => buildMigrationPlan(entries, scope));
     report.excluded.push(...plan.excluded);
     report.warnings.push(...plan.warnings);
+    report.urlRewrites = plan.urlRewrites;
     report.plannedObjects = plan.objects.map(({ key, sourceKey, kind }) => ({ key, sourceKey, kind }));
     progress.log(`Plan: ${plan.objects.length} objects; ${plan.excluded.length} excluded; ${plan.warnings.length} warnings`);
     for (const { key, reason } of plan.excluded.filter((entry) => entry.reason === 'unsupported-extension')) {
@@ -391,6 +393,7 @@ export async function migrateCli(args, {
       fetchImpl: execute ? fetchImpl : readOnlyFetch(fetchImpl),
     };
     report.projectConfig = await progress.run('Checking project config conflicts', () => migrateProjectConfig(configOptions));
+    report.warnings.push(...(report.projectConfig.warnings || []));
     report.imageErrors = [];
     report.uploadedImageUrls = [];
     report.statuses = [];
@@ -415,6 +418,7 @@ export async function migrateCli(args, {
     report.imageUrls = result.imageUrls;
     report.uploadedImageUrls = result.uploadedImageUrls || [];
     report.imageErrors = result.imageErrors;
+    report.urlRewrites = result.urlRewrites;
     report.statuses = [...result.statuses].map(([key, status]) => ({ key, status }));
     report.results = result.results;
     if (execute && report.projectConfig.status === 'planned') {
@@ -431,10 +435,10 @@ export async function migrateCli(args, {
       report.warnings ||= [];
       report.warnings.push({
         id: 'image-upload-errors', severity: 'warning',
-        description: 'Failed image fetches/uploads kept their original URLs',
+        description: 'Failed image fetches/uploads retained their references, with same-site DA URLs rewritten to the source API',
         count: report.imageErrors.length, items: report.imageErrors,
       });
-      progress.log(`Image errors: ${report.imageErrors.length}; original URLs preserved; see report`);
+      progress.log(`Image errors: ${report.imageErrors.length}; see report for retained or rewritten source URLs`);
     }
     report.finishedAt = new Date().toISOString();
     try {

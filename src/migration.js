@@ -2,6 +2,7 @@ import { preflight } from './preflight.js';
 import { splitExt, toHlx6Path } from './paths.js';
 import { deterministicUlid } from './ulid.js';
 import { parse, serialize } from 'parse5';
+import { rewriteDaBody } from './da-urls.js';
 
 const CONTENT_TYPES = {
   '.avif': 'image/avif',
@@ -259,7 +260,8 @@ function makeAuditPlan(entry, scope, auditIndex, docIdByDaId, versions, missingS
 /**
  * Builds an immutable plan; performs no network or storage writes.
  * @param {object[]} entries DA dump entries from readDump().
- * @param {{org:string, daSite:string, hlx6Site:string}} scope
+ * @param {{org:string, daOrg?:string, daSite:string, hlx6Site:string}} scope Migration scope.
+ * @returns {object} Original-body plan, URL rewrites, exclusions and warnings.
  */
 export function buildMigrationPlan(entries, scope) {
   const checks = preflight(entries);
@@ -296,9 +298,18 @@ export function buildMigrationPlan(entries, scope) {
     .forEach((entry) => objects.push(makeAuditPlan(entry, scope, auditIndex, docIdByDaId, versions, missingSnapshots)));
 
   const unsupported = objects.filter((object) => object.contentType === undefined);
+  const supported = objects.filter((object) => object.contentType !== undefined);
+  const urlRewrites = [];
+  const unsupportedUrls = [];
+  for (const object of supported) {
+    const result = rewriteDaBody(object, scope);
+    urlRewrites.push(...result.rewrites.map((item) => ({ key: object.sourceKey, ...item })));
+    unsupportedUrls.push(...result.unsupported.map((item) => ({ key: object.sourceKey, ...item })));
+  }
   return {
     scope: { org: scope.org, daSite: scope.daSite, hlx6Site: scope.hlx6Site },
-    objects: objects.filter((object) => object.contentType !== undefined),
+    objects: supported,
+    urlRewrites,
     excluded: [
       ...entries.filter((entry) => entry.kind === 'props-sidecar')
         .map((entry) => ({ key: entry.key, kind: entry.kind })),
@@ -308,6 +319,11 @@ export function buildMigrationPlan(entries, scope) {
     ],
     warnings: [
       ...checks.checks.filter((check) => check.severity === 'warning' && check.count),
+      ...(unsupportedUrls.length ? [{
+        id: 'unrewritten-da-urls', severity: 'warning',
+        description: 'Same-site DA admin URLs without a URL-only API mapping were retained',
+        count: unsupportedUrls.length, items: unsupportedUrls,
+      }] : []),
       ...(auditIndex.invalidRecords.length ? [{
         id: 'malformed-audit-records', severity: 'warning',
         description: 'Malformed DA audit records were skipped; see items for original lines',

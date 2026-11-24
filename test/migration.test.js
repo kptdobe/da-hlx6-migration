@@ -4,6 +4,7 @@ import {
   buildMigrationPlan, collectImageUrls, collectExternalImageUrls, firstEmail, parseAudit, rewriteImageUrls,
 } from '../src/migration.js';
 import { classifyDa } from '../src/classify.js';
+import { rewriteDaUrls, rewriteDaBody } from '../src/da-urls.js';
 
 const entry = (path, body, metadata = {}) => {
   const rel = path;
@@ -16,6 +17,104 @@ const entry = (path, body, metadata = {}) => {
   };
 };
 const scope = { org: 'kptdobe', daSite: 'sample-content-da', hlx6Site: 'sample-content-hlx6-migrated' };
+
+describe('DA URL rewriting', () => {
+  const crossScope = { ...scope, daOrg: 'adobecom' };
+  const api = 'https://api.aem.live/kptdobe/sites/sample-content-hlx6-migrated';
+
+  it('maps content documents, sheets, directories and supported admin routes across owners/sites', () => {
+    const cases = [
+      ['https://content.da.live/adobecom/sample-content-da/library/blocks/columns', `${api}/source/library/blocks/columns.html`],
+      ['https://content.da.live/adobecom/sample-content-da/library/blocks.json', `${api}/source/library/blocks.json`],
+      ['https://content.da.live/adobecom/sample-content-da/', `${api}/source/index.html`],
+      ['https://content.da.live/adobecom/sample-content-da/docs/', `${api}/source/docs/index.html`],
+      ['https://content.da.live/adobecom/sample-content-da/encoded%20name.html?x=a%2Fb&y=2#section%20one', `${api}/source/encoded%20name.html?x=a%2Fb&y=2#section%20one`],
+      ['https://admin.da.live/source/adobecom/sample-content-da/.tags/data.json?x=1#data', `${api}/source/.tags/data.json?x=1#data`],
+      ['https://admin.da.live/source/adobecom/sample-content-da/a.json?x=%28)&y=a,b#anchor]', `${api}/source/a.json?x=%28)&y=a,b#anchor]`],
+      ['https://admin.da.live/list/adobecom/sample-content-da/.tags', `${api}/source/.tags/`],
+      ['https://admin.da.live/list/adobecom/sample-content-da/', `${api}/source/`],
+      ['https://admin.da.live/config/adobecom/sample-content-da', `${api}/config/editor/da.json`],
+      ['https://admin.da.live/api/source/adobecom/sample-content-da/index.html', `${api}/source/index.html`],
+      ['//content.da.live/adobecom/sample-content-da/a.svg', `${api}/source/a.svg`],
+    ];
+    for (const [source, target] of cases) {
+      assert.deepEqual(rewriteDaUrls(source, crossScope), {
+        value: target, rewrites: [{ url: source, targetUrl: target }], unsupported: [],
+      });
+    }
+  });
+
+  it('leaves other sites, owners, published URLs and lookalike hosts untouched', () => {
+    const text = [
+      'https://admin.da.live/source/adobecom/shared-site/.da/translate-keys.json',
+      'https://content.da.live/adobecom/sample-content-da-other/a.html',
+      'https://content.da.live/other-owner/sample-content-da/a.html',
+      'https://main--sample-content-da--adobecom.aem.live/icons/a.svg',
+      'https://content.da.live.evil.example/adobecom/sample-content-da/a.html',
+      'https://evil-content.da.live/adobecom/sample-content-da/a.html',
+      'https://admin.da.live/list/adobecom',
+    ].join('\n');
+    assert.deepEqual(rewriteDaUrls(text, crossScope), { value: text, rewrites: [], unsupported: [] });
+  });
+
+  it('rewrites embedded HTML/SVG references without changing markup, escaping or surrounding punctuation', () => {
+    const source = 'https://content.da.live/adobecom/sample-content-da';
+    const text = `<a href="${source}/docs?x=1&amp;y=2#part">[block](${source}/library/blocks/hero)</a><image href="${source}/image(1).svg"/>`;
+    for (const contentType of ['text/html', 'image/svg+xml']) {
+      const body = Buffer.from(text);
+      const result = rewriteDaBody({ body, contentType, key: 'test' }, crossScope);
+      assert.equal(result.body.toString(), `<a href="${api}/source/docs.html?x=1&amp;y=2#part">[block](${api}/source/library/blocks/hero.html)</a><image href="${api}/source/image(1).svg"/>`);
+      assert.equal(result.rewrites.length, 3);
+      assert.equal(body.toString(), text);
+    }
+  });
+
+  it('decodes JSON string escapes while preserving non-string bytes and numeric precision', () => {
+    const text = String.raw`{
+  "large": 9007199254740993123, "untouched": "\u0061",
+  "data": [{"path":"https:\/\/content.da.live\/adobecom\/sample-content-da\/library\/blocks\/columns"}],
+  "nested": "\u0068ttps://admin.da.live/source/adobecom/sample-content-da/.tags/tags.json"
+}
+`;
+    const result = rewriteDaBody({ body: Buffer.from(text), contentType: 'application/json', key: 'sheet.json' }, crossScope);
+    assert.equal(result.body.toString(), `{
+  "large": 9007199254740993123, "untouched": "\\u0061",
+  "data": [{"path":"${api}/source/library/blocks/columns.html"}],
+  "nested": "${api}/source/.tags/tags.json"
+}
+`);
+    assert.equal(result.rewrites.length, 2);
+    const unchanged = Buffer.from(' { "data": [], "label": "\\u0061" }\n');
+    assert.equal(rewriteDaBody({ body: unchanged, contentType: 'application/json', key: 'sheet.json' }, crossScope).body, unchanged);
+  });
+
+  it('fails explicitly with the source key when a URL-bearing JSON string has invalid escaping', () => {
+    const body = Buffer.from(String.raw`{"path":"https://content.da.live/adobecom/sample-content-da/\q"}`);
+    assert.throws(() => rewriteDaBody({
+      body, contentType: 'application/json', key: 'adobecom/sample-content-da/library/blocks.json',
+    }, crossScope), /Invalid JSON string in adobecom\/sample-content-da\/library\/blocks.json/);
+  });
+
+  it('keeps unmappable same-site admin URLs and reports their source keys in the plan', () => {
+    const url = 'https://admin.da.live/versionsource/kptdobe/sample-content-da/doc-id/version-id.html';
+    const source = entry('/library/blocks.json', JSON.stringify({ data: [{ path: url }] }));
+    const plan = buildMigrationPlan([source], scope);
+    assert.equal(plan.objects[0].body, source.body);
+    assert.deepEqual(plan.urlRewrites, []);
+    const warning = plan.warnings.find(({ id }) => id === 'unrewritten-da-urls');
+    assert.equal(warning.count, 1);
+    assert.equal(warning.items[0].key, source.key);
+    assert.equal(warning.items[0].url, url);
+    assert.match(warning.items[0].reason, /versionsource/);
+  });
+
+  it('does not alter binary media or generated audit records containing DA URLs', () => {
+    const body = Buffer.concat([Buffer.from([0, 255]), Buffer.from('https://content.da.live/adobecom/sample-content-da/image.png')]);
+    for (const contentType of ['image/png', 'application/pdf', 'application/x-ndjson']) {
+      assert.deepEqual(rewriteDaBody({ body, contentType, key: 'test' }, crossScope), { body, rewrites: [], unsupported: [] });
+    }
+  });
+});
 
 describe('parseAudit', () => {
   it('extracts version timestamp, author and id from DA audit TSV', () => {
