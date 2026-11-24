@@ -8,13 +8,14 @@ it('formats the final execution summary with exact write counts and a local snap
     dryRun: false, startedAt: '2026-10-12T00:00:00.000Z', finishedAt: '2026-10-12T00:00:15.000Z',
     statuses, results: statuses.map(({ key }) => ({ key, status: 'written' })),
     uploadedImageUrls: Array.from({ length: 11 }, (_, index) => `image-${index}`),
+    reusedImageUrls: ['existing-a', 'existing-b', 'alias'],
     imageErrors: [], projectConfig: { status: 'exists' }, warnings: [], blockers: [],
     sourceObjects: 39, sourceSnapshotComplete: true, sourceDump: '/repo/tmp/xwz',
   }, '/repo');
   assert.equal(summary, [
     'Migration succeeded in **15 seconds**.', '',
     '- **29 objects written:** 27 overwritten, 2 newly created.',
-    '- **11 images uploaded**, no image errors.',
+    '- **3 images reused**, **11 images uploaded**, no image errors.',
     '- Project config already matched; no warnings or blockers.',
     '- All **39 source objects** retained locally: `./tmp/xwz`.',
   ].join('\n'));
@@ -98,6 +99,19 @@ it('prints heartbeats for pending operations and stops them on close', (context)
   const count = lines.length;
   context.mock.timers.tick(30000);
   assert.equal(lines.length, count);
+});
+
+it('logs every image failure with its reason even inside the progress throttle interval', () => {
+  const lines = [];
+  const progress = createProgress({ output: (line) => lines.push(line), now: () => 0 });
+  try {
+    for (const status of [404, 403]) {
+      progress.onProgress({ phase: 'Image upload failed', key: `image-${status}`, error: `Image fetch failed (${status})` });
+    }
+    assert.equal(lines.length, 2);
+    assert.match(lines[0], /image-404; error=Image fetch failed \(404\)/);
+    assert.match(lines[1], /image-403; error=Image fetch failed \(403\)/);
+  } finally { progress.close(); }
 });
 
 it('throttles interleaved progress from concurrent dump reads', () => {

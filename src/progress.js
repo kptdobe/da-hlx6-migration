@@ -31,10 +31,11 @@ export function formatMigrationSummary(report, cwd = process.cwd()) {
       ? ` ${overwritten.toLocaleString('en-US')} overwritten, ${created.toLocaleString('en-US')} newly created` : '';
     lines.push(`- **${plural(written.length, 'object')} written${counts ? ':' : ''}**${counts}.`);
     const uploaded = report.uploadedImageUrls?.length || 0;
+    const reused = report.reusedImageUrls?.length || 0;
     const errors = report.imageErrors?.length || 0;
     const rewritten = (report.imageErrors || []).filter(({ action }) => action === 'rewritten-to-source-api').length;
     const retained = rewritten ? `${errors - rewritten} original URLs retained; ${rewritten} DA URLs rewritten` : 'original URLs retained';
-    lines.push(`- **${plural(uploaded, 'image')} uploaded**, ${errors ? `**${plural(errors, 'image error')}**; ${retained}` : 'no image errors'}.`);
+    lines.push(`- **${plural(reused, 'image')} reused**, **${plural(uploaded, 'image')} uploaded**, ${errors ? `**${plural(errors, 'image error')}**; ${retained}` : 'no image errors'}.`);
   }
   const configRewrites = report.projectConfig?.status === 'exists' ? 0 : (report.projectConfig?.urlRewrites?.length || 0);
   const urlRewrites = (report.urlRewrites?.length || 0) + configRewrites;
@@ -100,8 +101,10 @@ export function createProgress({
       current = `${phase}${completed === undefined ? '' : `: ${completed}${total === undefined ? '' : `/${total}`}`}`
         + `${bytes === undefined ? '' : `; ${bytes} bytes`}${key ? `; ${key}` : ''}`
         + `${event.status ? `; status=${event.status}` : ''}`
+        + `${event.error ? `; error=${event.error}` : ''}`
+        + `${event.reused === undefined ? '' : `; reused=${event.reused}; uploaded=${event.uploaded}; failed=${event.failed}`}`
         + `${event.shardsTotal === undefined ? '' : `; shards=${event.shardsCompleted}/${event.shardsTotal}; pages=${event.pages}`}`;
-      if (!phases.has(phase) || completed === 0 || (total !== undefined && completed === total)
+      if (event.error || !phases.has(phase) || completed === 0 || (total !== undefined && completed === total)
         || now() - lastOutput >= 5000) log(current);
       phases.add(phase);
     },

@@ -154,22 +154,22 @@ Implemented in `bin/preflight.js`.
 helix-api-service exposes `POST https://api.aem.live/{org}/sites/{hlx6-site}/media/` (`src/media/handler.js`, permission `media:upload`). It accepts either the raw bytes (`Content-Type: image/...`) or `{"url": "..."}`. It:
 1. detects the type and rejects unsupported types (415)
 2. preprocesses and validates the file: size limits per type (site config `limits.preview.*`), and SVG checked for scripts and event handlers (409 when rejected). The regular request body is limited to about 5 MB by API Gateway/Lambda; this is an upload-path limit, not a media delivery limit. See [helix-api-service issue #403](https://github.com/adobe/helix-api-service/issues/403) for the proposed direct/presigned upload path.
-3. stores it with `@adobe/helix-mediahandler` (`storeBlob`) under `{hlx6-content-bus-id}/{hash}`, with `alg`, `agent`, `width`, `height` metadata, and the R2 mirror if the deployment enables it. An existing hash is not uploaded again.
+3. stores it with `@adobe/helix-mediahandler` (`storeBlob`) under `{hlx6-content-bus-id}/{hash}`, with `alg`, `agent`, `width`, `height` metadata, and the R2 mirror if the deployment enables it. The migration checks for existing media first rather than relying on POST deduplication.
 4. returns `{ uri: "https://main--{site}--{org}.aem.page/media_{hash}.{ext}", meta }`
 
 The hash is `"1" + sha1(contentLength + first 8 KiB)` (`src/media.js` `mediaHash`, verified against a real image). It is the same on every site. With the team's stable `contentBusId` decision, a da page's previewed media and the hlx6 project use the same `{contentBusId}/{hash}` object; reuse it if present. If the object is absent (for example, the page was never previewed), upload through the media API into that same site-scoped folder.
 
 ### Per image
 1. Keep the api-service target prefixes: main target `.aem.page/` and `.aem.live/`, `./media_`, and HTTPS `/adobe/dynamicmedia/deliver/` URLs on any host. Other image references are upload candidates; this includes `https://content.da.live/{source-org}/{source-site}/...`. The migration parses each `srcset` candidate individually.
-2. Fetch candidates and POST their bytes to the target media API, which handles hash deduplication. Send the DA token only to the exact `https://content.da.live` origin, never to lookalike hosts or third parties.
+2. Resolve same-source DA images from the downloaded snapshot where available; fetch other candidates. Compute `mediaHash` and HEAD `helix-media-bus/{hlx6-content-bus-id}/{hash}`. Reuse an existing object with matching length and a supported stored image content type, deriving the extension from that type. Only a 404 triggers a POST to the target media API; authorization, network and other storage failures are reported, not treated as missing media. Check existence before enforcing the regular upload size limit. Share in-flight lookups/uploads by hash, including across different image URLs. Send the DA token only to the exact `https://content.da.live` origin, never to lookalike hosts or third parties.
 3. Rewrite successful uploads to the returned relative media path, then apply R13. Failed same-site DA URLs point to the migrated source API; other failed URLs and kept-prefix URLs remain unchanged.
-4. Individual fetch/upload failures do not block migration: record each URL, error, source keys, and `kept-original-url` or `rewritten-to-source-api` action (with `targetUrl`) in `imageErrors` and warning entries. This deliberately differs from api-service POST's HTTP 400 on failure. Missing media credentials remain a fatal setup error.
+4. Individual fetch/lookup/upload failures do not block migration: record each URL, error, source keys, and `kept-original-url` or `rewritten-to-source-api` action (with `targetUrl`) in `imageErrors` and warning entries. Progress and reports separate `reusedImageUrls`, `uploadedImageUrls` and failed URLs; aliases sharing a completed upload count as reused, not additional uploads. This deliberately differs from api-service POST's HTTP 400 on failure. Missing media credentials remain a fatal setup error.
 
 ### Why the API and not a direct media-bus write
 - Same validation as an author upload (size limits, SVG sanitization), so we never store a file hlx6 would refuse.
 - R2 mirroring and any future media bookkeeping stay the API's responsibility.
 - The migration role needs **no write access to `helix-media-bus`**, only read on the da folder (§IAM).
-- Volume is bounded: one call per **distinct** image per site, and existing hashes are skipped server-side.
+- Volume is bounded: at most one lookup/upload per **distinct hash** per run, and existing hashes never reach the upload API.
 
 With a stable `contentBusId`, previewed da images are already in the target site's media folder; no media-bucket copy is needed. For never-previewed images above the regular endpoint's request-size limit, the migration needs the direct/presigned upload flow in issue #403 before it can ingest them. The migration role still needs no media-bucket write permission.
 

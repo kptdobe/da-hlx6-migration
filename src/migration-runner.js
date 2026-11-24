@@ -69,7 +69,7 @@ export async function inspectDestination(client, scope, objects, {
   return statuses;
 }
 
-async function prepareImages(objects, { scope, mediaToken, daSourceToken, fetchImpl, onProgress, onImageError, onImageUploaded }) {
+async function prepareImages(objects, { client, scope, mediaToken, daSourceToken, fetchImpl, onProgress, onImageError, onImageUploaded, onImageReused }) {
   const references = new Map();
   objects.filter((object) => object.contentType === 'text/html').forEach((object) => {
     collectExternalImageUrls(object.body.toString('utf8'), scope.org, scope.hlx6Site).forEach((url) => {
@@ -81,17 +81,41 @@ async function prepareImages(objects, { scope, mediaToken, daSourceToken, fetchI
   if (urls.length && !mediaToken) {
     throw new Error(`Images require an API token (${urls.length} distinct URL(s))`);
   }
+  if (urls.length && !scope.hlx6ContentBusId) {
+    throw new Error('Image reuse requires a target content bus ID');
+  }
+  const sourceImages = new Map(objects
+    .filter((object) => object.sourceKey && object.contentType?.startsWith('image/'))
+    .map((object) => [object.sourceKey, object]));
+  const mediaCache = new Map();
   const replacements = new Map();
   const imageErrors = [];
+  const uploadedImageUrls = [];
+  const reusedImageUrls = [];
   let completed = 0;
   const total = urls.length;
-  onProgress({ phase: 'Uploading images', completed: 0, total });
+  const progress = () => onProgress({
+    phase: 'Uploading images', completed, total,
+    reused: reusedImageUrls.length, uploaded: uploadedImageUrls.length, failed: imageErrors.length,
+  });
+  progress();
   const apiUrl = `https://api.aem.live/${scope.org}/sites/${scope.hlx6Site}/media/`;
   await processQueue([...urls], async (url) => {
     try {
-      const uploaded = await uploadImage(url, { apiUrl, mediaToken, daSourceToken, fetchImpl });
+      const parsed = new URL(url);
+      const sourceImage = parsed.origin === 'https://content.da.live'
+        ? sourceImages.get(decodeURIComponent(parsed.pathname.slice(1))) : undefined;
+      const uploaded = await uploadImage(url, {
+        apiUrl, mediaToken, daSourceToken, fetchImpl, client, scope, sourceImage, mediaCache,
+      });
       replacements.set(url, uploaded.relativeUrl);
-      onImageUploaded(url);
+      if (uploaded.reused) {
+        reusedImageUrls.push(url);
+        onImageReused(url);
+      } else {
+        uploadedImageUrls.push(url);
+        onImageUploaded(url);
+      }
     } catch (error) {
       const { value: targetUrl } = rewriteDaUrls(url, scope);
       const action = targetUrl === url ? 'kept-original-url' : 'rewritten-to-source-api';
@@ -101,12 +125,12 @@ async function prepareImages(objects, { scope, mediaToken, daSourceToken, fetchI
       };
       imageErrors.push(failure);
       onImageError(failure);
-      onProgress({ phase: `Image upload failed; ${action}`, key: url, status: action });
+      onProgress({ phase: `Image upload failed; ${action}`, key: url, status: action, error: error.message });
     }
     completed += 1;
-    onProgress({ phase: 'Uploading images', completed, total });
+    progress();
   }, IMAGE_CONCURRENCY);
-  return { replacements, imageErrors, urls };
+  return { replacements, imageErrors, urls, uploadedImageUrls, reusedImageUrls };
 }
 
 /**
@@ -151,6 +175,7 @@ export async function runMigration(plan, {
   onProgress = () => {},
   onImageError = () => {},
   onImageUploaded = () => {},
+  onImageReused = () => {},
 }) {
   const statuses = await inspectDestination(client, scope, plan.objects, { overwrite, requireEmpty: execute, onProgress });
   if (!execute) {
@@ -162,6 +187,8 @@ export async function runMigration(plan, {
         .filter((object) => object.contentType === 'text/html')
         .flatMap((object) => collectExternalImageUrls(object.body.toString('utf8'), scope.org, scope.hlx6Site)))],
       imageErrors: [],
+      uploadedImageUrls: [],
+      reusedImageUrls: [],
       objects: plan.objects.length,
       urlRewrites: plan.urlRewrites || plan.objects.flatMap((object) => (
         rewriteDaBody(object, scope).rewrites.map((item) => ({ key: object.sourceKey || object.key, ...item }))
@@ -169,8 +196,8 @@ export async function runMigration(plan, {
     };
   }
 
-  const { replacements, imageErrors, urls } = await prepareImages(plan.objects, {
-    scope, mediaToken, daSourceToken, fetchImpl, onProgress, onImageError, onImageUploaded,
+  const { replacements, imageErrors, urls, uploadedImageUrls, reusedImageUrls } = await prepareImages(plan.objects, {
+    client, scope, mediaToken, daSourceToken, fetchImpl, onProgress, onImageError, onImageUploaded, onImageReused,
   });
   onProgress({ phase: 'Preparing target objects' });
   const objects = plan.objects.map((object) => prepareObject(object, replacements, scope));
@@ -217,7 +244,8 @@ export async function runMigration(plan, {
     dryRun: false,
     statuses,
     imageUrls: urls,
-    uploadedImageUrls: [...replacements.keys()],
+    uploadedImageUrls,
+    reusedImageUrls,
     imageErrors,
     urlRewrites: objects.flatMap((object) => object.urlRewrites),
     objects: plan.objects.length,

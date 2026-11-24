@@ -14,7 +14,7 @@ export function normalizeIgnoredFolders(folders = []) {
 
 /**
  * Selects before body reads. DA history uses identity keys, requiring metadata
- * for ignored non-media current files and remaining versions whose path hints may match.
+ * for non-media current owners and remaining versions whose path hints may match.
  */
 export async function selectMigrationEntries(entries, {
   source, ignoredFolders, readMetadata, concurrency = 24, onProgress = () => {},
@@ -28,6 +28,7 @@ export async function selectMigrationEntries(entries, {
   }));
   const excluded = new Set(entries.filter((entry) => matches(entry.key.slice(source.length))).map((entry) => entry.key));
   const ignoredIds = new Set();
+  const ownerIds = new Set();
   const missingIgnoredKeys = new Set();
   const metadata = async (entry) => entry.metadata ?? readMetadata(entry.key);
   let completed = 0;
@@ -54,8 +55,22 @@ export async function selectMigrationEntries(entries, {
     completed += 1;
     onProgress({ phase, completed, total: candidates.length, key: entry.key });
   }, concurrency);
+  if (hasHistory) {
+    const owners = classified.filter(({ entry, kind, trashedKind }) => !excluded.has(entry.key)
+      && ['doc', 'sheet', 'folder'].includes(kind === 'trash' ? trashedKind : kind));
+    const ownerPhase = 'Resolving retained owners for ignored-folder history exclusions';
+    completed = 0;
+    onProgress({ phase: ownerPhase, completed, total: owners.length });
+    await processQueue([...owners], async ({ entry }) => {
+      const meta = await metadata(entry);
+      if (meta.id) ownerIds.add(meta.id);
+      completed += 1;
+      onProgress({ phase: ownerPhase, completed, total: owners.length, key: entry.key });
+    }, concurrency);
+  }
+  const ignoredHistory = (docId) => ignoredIds.has(docId) || !ownerIds.has(docId);
   const versions = classified.filter(({ entry, kind, docId }) => kind === 'version'
-    && !excluded.has(entry.key) && !ignoredIds.has(docId));
+    && !excluded.has(entry.key) && !ignoredHistory(docId));
   completed = 0;
   onProgress({ phase, completed, total: versions.length });
   await processQueue(versions, async ({ entry, docId }) => {
@@ -69,7 +84,7 @@ export async function selectMigrationEntries(entries, {
     onProgress({ phase, completed, total: versions.length, key: entry.key });
   }, concurrency);
   return classified.filter(({ entry, kind, docId }) => {
-    if (!excluded.has(entry.key) && !(['version', 'audit'].includes(kind) && ignoredIds.has(docId))) return true;
+    if (!excluded.has(entry.key) && !(['version', 'audit'].includes(kind) && ignoredHistory(docId))) return true;
     onExcluded({
       key: entry.key, kind, reason: 'ignored-folder',
       ...(missingIgnoredKeys.has(entry.key) && { metadataStatus: 'not-found' }),

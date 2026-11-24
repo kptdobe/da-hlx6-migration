@@ -36,8 +36,8 @@ it('filters by boundaries, folder markers, IDs and orphan hints, not stale manif
     entry('/.da-versions/ignored/audit-1000.txt'),
     entry('/.da-versions/stage/v.json'),
     entry('/.da-versions/orphan/v.html', { path: 'source/drafts/esp-dev/deleted.html' }),
-    entry('/drafts/esp-dev-other/keep.html'),
-    entry('/Drafts/esp-dev/keep.html'),
+    entry('/drafts/esp-dev-other/keep.html', { id: 'keep' }),
+    entry('/Drafts/esp-dev/keep.html', { id: 'case-keep' }),
     entry('/.da-versions/keep/v.html', { path: 'source/keep.html' }),
   ];
   const excluded = [];
@@ -58,6 +58,43 @@ it('propagates metadata failures instead of silently migrating excluded history'
   ], {
     source, ignoredFolders, readMetadata: async () => { throw new Error('Access denied'); },
   }), /Access denied/);
+});
+
+for (const folder of ['/.trash', '/.import', '/drafts/excluded']) {
+  it(`ignoring ${folder} excludes ownerless history and all audit segments without reading their metadata`, async () => {
+    const entries = [
+      { key: `${source}${folder}/deleted.html`, metadata: { id: 'excluded-id' } },
+      { key: `${source}/moved/keep.html`, metadata: { id: 'keep' } },
+      { key: `${source}/keep.json`, metadata: { id: 'sheet' } },
+      { key: `${source}/.da-versions/deleted-old-id/old.html`, metadata: { path: 'source/previous/deleted.html' } },
+      { key: `${source}/.da-versions/deleted-old-id/audit.txt`, metadata: {} },
+      { key: `${source}/.da-versions/deleted-old-id/audit-1000.txt`, metadata: {} },
+      { key: `${source}/.da-versions/audit-only/audit.txt`, metadata: {} },
+      { key: `${source}/.da-versions/keep/v.html`, metadata: { path: 'source/previous/keep.html' } },
+      { key: `${source}/.da-versions/keep/audit.txt`, metadata: {} },
+      { key: `${source}/.da-versions/sheet/v.json`, metadata: { path: 'source/keep.json' } },
+    ];
+    const selected = await selectMigrationEntries(entries, {
+      source, ignoredFolders: [folder],
+      readMetadata: () => { throw new Error('Snapshot metadata must be reused'); },
+    });
+    assert.deepEqual(selected, [entries[1], entries[2], ...entries.slice(7)]);
+    assert.strictEqual(await selectMigrationEntries(entries, { source, ignoredFolders: [] }), entries);
+  });
+}
+
+it('preserves selected trash history when a different folder is excluded', async () => {
+  const entries = [
+    { key: `${source}/.trash/keep.html`, metadata: { id: 'keep-trash' } },
+    { key: `${source}/.da-versions/keep-trash/v.html`, metadata: { path: 'source/previous.html' } },
+    { key: `${source}/.da-versions/keep-trash/audit.txt`, metadata: {} },
+    { key: `${source}/drafts/excluded/deleted.html`, metadata: { id: 'excluded' } },
+    { key: `${source}/.da-versions/excluded/v.html`, metadata: {} },
+  ];
+  assert.deepEqual(await selectMigrationEntries(entries, {
+    source, ignoredFolders: ['/drafts/excluded'],
+    readMetadata: () => { throw new Error('Manifest metadata must be reused'); },
+  }), entries.slice(0, 3));
 });
 
 it('skips missing ignored current objects and still filters remaining version path hints', async () => {
@@ -110,7 +147,10 @@ it('does not suppress permission, service, or unresolved version metadata failur
     }), (error) => error === original);
   }
   const missing = Object.assign(new Error('Missing unresolved version'), { $metadata: { httpStatusCode: 404 } });
-  await assert.rejects(selectMigrationEntries([{ key: `${source}/.da-versions/unknown/v.html` }], {
+  await assert.rejects(selectMigrationEntries([
+    { key: `${source}/keep.html`, metadata: { id: 'unknown' } },
+    { key: `${source}/.da-versions/unknown/v.html` },
+  ], {
     source, ignoredFolders, readMetadata: async () => { throw missing; },
   }), (error) => error === missing);
 });
@@ -126,7 +166,7 @@ for (const local of [false, true]) {
       { key: `${source}/.trash/drafts/esp-dev/nested.avif` },
       { key: `${source}/drafts/esp-stage/image.webp` },
       { key: `${source}/.import-other/keep.jpg` },
-      { key: `${source}/keep.html` },
+      { key: `${source}/keep.html`, ...(local ? { metadata: { id: 'keep' } } : {}) },
       {
         key: `${source}/.da-versions/keep/v.html`,
         ...(local ? { metadata: { path: 'source/keep.html' } } : {}),
@@ -139,6 +179,10 @@ for (const local of [false, true]) {
       source, ignoredFolders: [...ignoredFolders, '/.import', '/.trash'],
       readMetadata: async (key) => {
         assert.ok(!local, 'Local version metadata must be reused');
+        if (key === `${source}/keep.html`) {
+          requests.push(key);
+          return { id: 'keep' };
+        }
         assert.equal(key, `${source}/.da-versions/keep/v.html`);
         requests.push(key);
         return { path: 'source/keep.html' };
@@ -147,7 +191,7 @@ for (const local of [false, true]) {
     });
     assert.deepEqual(selected, entries.slice(7));
     assert.deepEqual(excluded.map(({ key }) => key), entries.slice(0, 7).map(({ key }) => key));
-    assert.deepEqual(requests, local ? [] : [`${source}/.da-versions/keep/v.html`]);
+    assert.deepEqual(requests, local ? [] : [`${source}/keep.html`, `${source}/.da-versions/keep/v.html`]);
   });
 }
 
@@ -164,7 +208,7 @@ it('still resolves current and trashed document and sheet identities to exclude 
       { key: `${source}/.da-versions/${id}/v.${ext}` },
       { key: `${source}/.da-versions/${id}/audit.txt` },
     ]),
-    { key: `${source}/keep.html` },
+    { key: `${source}/keep.html`, metadata: { id: 'keep' } },
   ];
   const requests = [];
   const selected = await selectMigrationEntries(entries, {
@@ -199,7 +243,7 @@ it('skips ignored local bodies before reading them', async (t) => {
   const entries = [
     { key: `${source}/drafts/esp-dev/a.html`, metadata: { id: 'ignored' }, bodyFile: 'missing.html' },
     { key: `${source}/.da-versions/ignored/v.html`, metadata: {}, bodyFile: 'missing-version.html' },
-    { key: `${source}/keep.html`, metadata: {}, bodyFile: 'keep.html' },
+    { key: `${source}/keep.html`, metadata: { id: 'keep' }, bodyFile: 'keep.html' },
   ];
   await fs.writeFile(path.join(directory, 'manifest.json'), JSON.stringify(entries));
   await fs.writeFile(path.join(directory, 'keep.html'), 'kept');
@@ -208,6 +252,25 @@ it('skips ignored local bodies before reading them', async (t) => {
   });
   assert.equal(selected.length, 1);
   assert.equal(selected[0].body.toString(), 'kept');
+});
+
+it('filters orphan history out of older complete snapshots before loading its image-bearing bodies', async (t) => {
+  await fs.mkdir('tmp', { recursive: true });
+  const directory = await fs.mkdtemp(path.resolve('tmp/selection-orphan-snapshot-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const entries = [
+    { key: `${source}/keep.html`, metadata: { id: 'keep' }, bodyFile: 'keep.html' },
+    { key: `${source}/.da-versions/deleted/v.html`, metadata: { path: 'source/deleted.html' }, bodyFile: 'missing-image-bearing-version.html' },
+    { key: `${source}/.da-versions/deleted/audit.txt`, metadata: {}, bodyFile: 'missing-audit.txt' },
+  ];
+  await fs.writeFile(path.join(directory, 'snapshot.json'), JSON.stringify({ complete: true, total: 3, downloaded: 3, ignoredFolders: ['/.trash'] }));
+  await fs.writeFile(path.join(directory, 'manifest.json'), JSON.stringify(entries));
+  await fs.writeFile(path.join(directory, 'keep.html'), '<main>keep</main>');
+  const selected = await readDump(directory, {
+    requireComplete: true,
+    selectEntries: (listed) => selectMigrationEntries(listed, { source, ignoredFolders: ['/.trash'] }),
+  });
+  assert.deepEqual(selected.map(({ key }) => key), [`${source}/keep.html`]);
 });
 
 for (const fullValidation of [false, true]) {
@@ -276,6 +339,7 @@ for (const mode of ['inventory', 'full validation', 'execution']) {
     const directory = await fs.mkdtemp(path.resolve('tmp/selection-cli-'));
     t.after(() => fs.rm(directory, { recursive: true, force: true }));
     const envFile = path.join(directory, 'env');
+    const folders = [...ignoredFolders, '/.trash'];
     const envKeys = ['S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY', 'S3_DEF_URL'];
     const previous = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
     if (execute) {
@@ -293,10 +357,14 @@ for (const mode of ['inventory', 'full validation', 'execution']) {
       [`${source}/drafts/esp-dev/a.html`]: { body: '<img src="https://excluded.example/image.png">', metadata: { id: 'ignored' } },
       [`${source}/drafts/esp-dev/image.jpg`]: { body: 'ignored image' },
       [`${source}/.trash/drafts/esp-stage/deleted.png`]: { body: 'ignored trashed image' },
+      [`${source}/.trash/deleted.html`]: { body: 'ignored trashed document', metadata: { id: 'trash-id' } },
       [`${source}/drafts/esp-stage.props`]: { body: '{}', metadata: { id: 'folder' } },
       [`${source}/.da-versions/ignored/v.html`]: { body: 'ignored', metadata: { path: 'source/old.html' } },
       [`${source}/.da-versions/ignored/audit.txt`]: { body: 'ignored audit' },
       [`${source}/.da-versions/orphan/v.html`]: { body: 'orphan', metadata: { path: 'source/drafts/esp-dev/deleted.html' } },
+      [`${source}/.da-versions/deleted-old-id/v.html`]: { body: '<main><img src="https://excluded.example/deleted.png"></main>', metadata: { path: 'source/old/deleted.html' } },
+      [`${source}/.da-versions/deleted-old-id/audit.txt`]: { body: 'ignored audit' },
+      [`${source}/.da-versions/deleted-old-id/audit-1000.txt`]: { body: 'ignored audit archive' },
       [`${source}/.da-versions/keep/v.html`]: { body: '<main>version</main>', metadata: { path: 'source/keep.html' } },
     });
     const configs = fakeClient({
@@ -307,7 +375,7 @@ for (const mode of ['inventory', 'full validation', 'execution']) {
     const writes = [];
     const report = await migrateCli([
       source, 'org/target', '-e', envFile, '-o', path.join(directory, 'report.json'),
-      ...ignoredFolders.flatMap((folder) => ['--ignore-folder', folder]),
+      ...folders.flatMap((folder) => ['--ignore-folder', folder]),
       ...(fullValidation ? ['--full-validation'] : []),
       ...(execute ? ['-x', '--refresh-source'] : []),
     ], {
@@ -333,11 +401,11 @@ for (const mode of ['inventory', 'full validation', 'execution']) {
     });
     if (report.sourceDump) t.after(() => fs.rm(report.sourceDump, { recursive: true, force: true }));
     assert.deepEqual(report.blockers, []);
-    assert.deepEqual(report.ignoredFolders, ignoredFolders);
+    assert.deepEqual(report.ignoredFolders, folders);
     assert.equal(report.sourceObjects, 2);
-    assert.equal(report.excluded.filter(({ reason }) => reason === 'ignored-folder').length, 7);
-    assert.equal(requests.filter(({ name }) => name === 'HeadObjectCommand').length, 4);
-    assert.equal(report.folderExclusionMetadataReads, 4);
+    assert.equal(report.excluded.filter(({ reason }) => reason === 'ignored-folder').length, 11);
+    assert.equal(requests.filter(({ name }) => name === 'HeadObjectCommand').length, 5);
+    assert.equal(report.folderExclusionMetadataReads, 5);
     const gets = requests.filter(({ name }) => name === 'GetObjectCommand').map(({ key }) => key).sort();
     assert.deepEqual(gets, fullValidation ? [`${source}/.da-versions/keep/v.html`, `${source}/keep.html`] : []);
     assert.equal(writes.length, execute ? 2 : 0);
@@ -346,7 +414,7 @@ for (const mode of ['inventory', 'full validation', 'execution']) {
       assert.equal(report.plannedObjects.length, 2);
       assert.deepEqual(report.imageUrls, []);
       const snapshot = JSON.parse(await fs.readFile(path.join(report.sourceDump, 'snapshot.json'), 'utf8'));
-      assert.deepEqual(snapshot.ignoredFolders, ignoredFolders);
+      assert.deepEqual(snapshot.ignoredFolders, folders);
       assert.equal(snapshot.total, 2);
       const reused = await migrateCli([
         source, 'org/target', '-e', envFile, '-o', path.join(directory, 'reuse.json'),
@@ -356,6 +424,6 @@ for (const mode of ['inventory', 'full validation', 'execution']) {
     } else {
       assert.equal(report.inventory.source.length, 2);
     }
-    assert.equal(JSON.parse(await fs.readFile(path.join(directory, 'report.json'), 'utf8')).excluded.length, 7);
+    assert.equal(JSON.parse(await fs.readFile(path.join(directory, 'report.json'), 'utf8')).excluded.length, 11);
   });
 }

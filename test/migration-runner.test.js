@@ -5,8 +5,9 @@ import { gunzipSync } from 'node:zlib';
 import { inspectDestination, runMigration } from '../src/migration-runner.js';
 import { buildMigrationPlan } from '../src/migration.js';
 import { classifyDa } from '../src/classify.js';
+import { mediaHash } from '../src/media.js';
 
-const scope = { org: 'kptdobe', daSite: 'sample-content-da', hlx6Site: 'sample-content-hlx6-migrated' };
+const scope = { org: 'kptdobe', daSite: 'sample-content-da', hlx6Site: 'sample-content-hlx6-migrated', hlx6ContentBusId: 'b'.repeat(59) };
 const object = {
   kind: 'doc',
   key: 'kptdobe/sample-content-hlx6-migrated/index.html',
@@ -84,6 +85,53 @@ describe('inspectDestination', () => {
 });
 
 describe('runMigration', () => {
+  it('reuses encoded same-source snapshot images across document/version URLs and reports counts', async () => {
+    const body = Buffer.from('snapshot image');
+    const sourceKey = 'adobecom/sample-content-da/images/caf\u00e9 photo.jpg';
+    const url = 'https://content.da.live/adobecom/sample-content-da/images/caf%C3%A9%20photo.jpg';
+    const alias = `${url}?v=1`;
+    const client = fakeClient();
+    const send = client.send;
+    let heads = 0;
+    client.send = async (command) => {
+      if (command.constructor.name !== 'HeadObjectCommand') return send(command);
+      heads += 1;
+      assert.equal(command.input.Bucket, 'helix-media-bus');
+      assert.equal(command.input.Key, `${scope.hlx6ContentBusId}/${mediaHash(body)}`);
+      return { ContentType: 'image/jpeg', ContentLength: body.length };
+    };
+    const image = {
+      kind: 'media', sourceKey, key: 'kptdobe/sample-content-hlx6-migrated/images/photo.jpg',
+      body, contentType: 'image/jpeg', metadata: {},
+    };
+    const doc = { ...object, body: Buffer.from(`<main><img src="${url}"></main>`) };
+    const version = {
+      ...doc, kind: 'version', key: 'kptdobe/sample-content-hlx6-migrated/.versions/doc/v1',
+      body: Buffer.from(`<main><img src="${alias}"></main>`),
+    };
+    const reused = [];
+    const uploaded = [];
+    const events = [];
+    const result = await runMigration({ objects: [doc, version, image] }, {
+      client, scope: { ...scope, daOrg: 'adobecom', write: [{ bucket: 'helix-source-bus', prefix: 'kptdobe/sample-content-hlx6-migrated/' }] },
+      execute: true, mediaToken: 'token',
+      onImageReused: (url) => reused.push(url), onImageUploaded: (url) => uploaded.push(url),
+      onProgress: (event) => events.push(event),
+      fetchImpl: () => { throw new Error('Snapshot images must not be fetched or uploaded'); },
+    });
+    assert.equal(heads, 1);
+    assert.deepEqual(result.reusedImageUrls.sort(), [url, alias].sort());
+    assert.deepEqual(reused.sort(), [url, alias].sort());
+    assert.deepEqual(result.uploadedImageUrls, []);
+    assert.deepEqual(uploaded, []);
+    assert.deepEqual(result.imageErrors, []);
+    const progress = events.findLast(({ phase }) => phase === 'Uploading images');
+    assert.deepEqual([progress.completed, progress.total, progress.reused, progress.uploaded, progress.failed], [2, 2, 2, 0, 0]);
+    for (const written of client.writes.filter(({ ContentType }) => ContentType === 'text/html')) {
+      assert.ok(gunzipSync(written.Body).toString().includes(`./media_${mediaHash(body)}.jpg`));
+    }
+  });
+
   it('rewrites current/trash/version text at transfer time, preserving plans, bytes and source hashes', async () => {
     const sourceUrl = 'https://content.da.live/adobecom/sample-content-da/library/blocks/columns';
     const targetUrl = 'https://api.aem.live/kptdobe/sites/sample-content-hlx6-migrated/source/library/blocks/columns.html';
@@ -338,17 +386,20 @@ describe('runMigration', () => {
 
   it('keeps failed image references and records every failure without blocking content writes', async () => {
     const client = fakeClient();
+    const events = [];
     const html = '<main><img src="https://events-data-dev.aws125.adobeitc.com/image.png"><source srcset="https://images.example/a.jpg 1x, https://images.example/b.jpg 2x"></main>';
     const result = await runMigration({ objects: [{ ...object, body: Buffer.from(html) }] }, {
       client, scope: { ...scope, daOrg: 'adobecom', write: [{ bucket: 'helix-source-bus', prefix: 'kptdobe/sample-content-hlx6-migrated/' }] },
       execute: true,
       mediaToken: 'test-token',
+      onProgress: (event) => events.push(event),
       fetchImpl: () => { throw new Error('Image fetch failed (403)'); },
     });
     assert.equal(result.results.length, 1);
     assert.equal(result.imageUrls.length, 3);
     assert.equal(result.imageErrors.length, 3);
     assert.ok(result.imageErrors.every(({ error, sourceKeys }) => error === 'Image fetch failed (403)' && sourceKeys.includes(object.key)));
+    assert.equal(events.filter(({ error }) => error === 'Image fetch failed (403)').length, 3);
     assert.equal(gunzipSync(client.writes[0].Body).toString(), html);
   });
 

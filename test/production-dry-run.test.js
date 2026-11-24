@@ -9,6 +9,7 @@ import { readOnlyClient, readOnlyFetch } from '../src/production-dry-run.js';
 import { migrateCli } from '../src/migration-cli.js';
 import { fakeClient } from './fixtures/fake-client.js';
 import { scanSite } from '../src/dump.js';
+import { mediaHash } from '../src/media.js';
 
 it('requires a fresh source or explicit snapshot resume for execution on any site pair', () => {
   for (const flag of ['-x', '--execute']) {
@@ -545,8 +546,10 @@ it('retains completed write and image counts in the report and final summary aft
   const previous = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
   await fs.writeFile(envFile, 'S3_ACCESS_KEY_ID=test\nS3_SECRET_ACCESS_KEY=test\nS3_DEF_URL=https://example.com\n');
   const imageUrl = 'https://content.da.live/source-org/source-site/image.png';
+  const reusedUrl = 'https://images.example/existing.png';
+  const reusedBody = Buffer.from([2]);
   const da = fakeClient({
-    'source-org/source-site/a.html': { body: `<main><img src="${imageUrl}"></main>`, metadata: { id: 'a' } },
+    'source-org/source-site/a.html': { body: `<main><img src="${imageUrl}"><img src="${reusedUrl}"></main>`, metadata: { id: 'a' } },
     'source-org/source-site/b.html': { body: '<main>later</main>', metadata: { id: 'b' } },
   });
   const configs = fakeClient({
@@ -566,12 +569,19 @@ it('retains completed write and image counts in the report and final summary aft
       progress, createReadClient: (backend) => (backend === 'da' ? da : configs), tokenProvider: () => 'test-token',
       createWriteClient: () => ({ async send(command) {
         if (command.constructor.name === 'ListObjectsV2Command') return { Contents: [] };
+        if (command.constructor.name === 'HeadObjectCommand') {
+          if (command.input.Key === `${'b'.repeat(59)}/${mediaHash(reusedBody)}`) {
+            return { ContentType: 'image/png', ContentLength: reusedBody.length };
+          }
+          throw Object.assign(new Error('NotFound'), { $metadata: { httpStatusCode: 404 } });
+        }
         if (command.input.Key.endsWith('/b.html')) throw new Error('Storage unavailable');
         return {};
       } }),
       fetchImpl: async (url, options = {}) => {
         if (url.startsWith('https://admin.da.live/')) return { status: 404 };
         if (options.method === 'POST') return { ok: true, json: async () => ({ uri: 'https://main--target-site--target-org.aem.page/media_a.png' }) };
+        if (url === reusedUrl) return { ok: true, headers: new Headers({ 'content-type': 'image/png' }), arrayBuffer: async () => reusedBody };
         assert.equal(url, imageUrl);
         return { ok: true, headers: new Headers({ 'content-type': 'image/png' }), arrayBuffer: async () => new Uint8Array([1]).buffer };
       },
@@ -581,10 +591,12 @@ it('retains completed write and image counts in the report and final summary aft
     assert.match(report.blockers[0], /PutObject failed.*target-org\/target-site\/b\.html.*Storage unavailable/);
     assert.equal(report.storageError.operation, 'PutObject');
     assert.deepEqual(report.uploadedImageUrls, [imageUrl]);
+    assert.deepEqual(report.reusedImageUrls, [reusedUrl]);
     assert.equal(report.results.filter(({ status }) => status === 'written').length, 1);
     assert.match(messages.at(-1), /Migration blocked after/);
     assert.match(messages.at(-1), /1 object written.*0 overwritten, 1 newly created/);
     assert.match(messages.at(-1), /1 image uploaded/);
+    assert.match(messages.at(-1), /1 image reused/);
     assert.doesNotMatch(messages.at(-1), /Migration succeeded/);
   } finally {
     if (downloadedSource) await fs.rm(downloadedSource, { recursive: true, force: true });

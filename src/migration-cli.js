@@ -396,6 +396,7 @@ export async function migrateCli(args, {
     report.warnings.push(...(report.projectConfig.warnings || []));
     report.imageErrors = [];
     report.uploadedImageUrls = [];
+    report.reusedImageUrls = [];
     report.statuses = [];
     report.results = [];
     const result = await progress.run(execute ? 'Running migration' : 'Inspecting target and planning images', () => runMigration(plan, {
@@ -413,10 +414,12 @@ export async function migrateCli(args, {
       },
       onImageError: (failure) => report.imageErrors.push(failure),
       onImageUploaded: (url) => report.uploadedImageUrls.push(url),
+      onImageReused: (url) => report.reusedImageUrls.push(url),
     }));
     report.objects = result.objects;
     report.imageUrls = result.imageUrls;
     report.uploadedImageUrls = result.uploadedImageUrls || [];
+    report.reusedImageUrls = result.reusedImageUrls || [];
     report.imageErrors = result.imageErrors;
     report.urlRewrites = result.urlRewrites;
     report.statuses = [...result.statuses].map(([key, status]) => ({ key, status }));
@@ -425,7 +428,7 @@ export async function migrateCli(args, {
       report.projectConfig = await progress.run('Migrating project config', () => migrateProjectConfig({ ...configOptions, execute: true }));
     }
     progress.log(`Project config: ${report.projectConfig.status}`);
-    progress.log(`Objects: ${result.objects}; image candidates: ${result.imageUrls.length}; uploaded: ${report.uploadedImageUrls.length}; failed URLs retained: ${report.imageErrors.length}`);
+    progress.log(`Objects: ${result.objects}; image candidates: ${result.imageUrls.length}; reused: ${report.reusedImageUrls.length}; uploaded: ${report.uploadedImageUrls.length}; failed URLs retained: ${report.imageErrors.length}`);
   } catch (error) {
     report.blockers.push(error.message);
     if (error.storageError) report.storageError = error.storageError;

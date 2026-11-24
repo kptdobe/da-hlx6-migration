@@ -205,6 +205,14 @@ into an ignored folder (including orphan versions). A similarly named sibling
 such as `/drafts/esp-dev-other` is not excluded by `/drafts/esp-dev`. The site root
 and dot/empty path segments are rejected.
 
+Whenever folders are excluded, version snapshots and audit segments are retained
+only for selected current document, sheet or folder IDs, including selected trash
+owners when `/.trash` is not excluded. History without a retained owner is omitted,
+so historical paths cannot resurrect excluded or deleted content. Owner IDs are
+resolved before version body reads; older local snapshots are reselected using
+their manifest metadata before bodies are loaded or images collected. Without
+folder exclusions, orphan-history migration retains its existing behavior.
+
 **Cost:** prefix checks are cheap, but DA stores history by document ID rather
 than folder. DA IDs are random UUIDs (or caller-supplied GUIDs), not hashes of
 the path; updates and moves retain the stored ID, so generating an ID locally
@@ -216,6 +224,8 @@ needs no HEAD or GET. Sites without history need no
 extra metadata reads. Large histories can therefore add significant latency and
 metadata-request charges, even in inventory mode. Requests use the configured
 download concurrency (`--concurrency`, default 24).
+With folder exclusions, retained non-media current objects also need identity
+metadata reads; history without a live owner needs no version metadata reads.
 
 Excluded bodies are never downloaded, snapshotted, parsed for images or written.
 If an ignored current object disappears after listing, its metadata 404 is logged
@@ -231,6 +241,16 @@ Target inventory and conflict protections are unchanged, and exclusions never
 delete existing source or target objects.
 
 ### Project config and images
+
+Execution reuses existing images in the target media bus before attempting uploads.
+It hashes original image bytes from the source snapshot where available, otherwise
+fetching the image, and checks the target content bus ID's media folder. Only a
+404 triggers a media API upload; other lookup failures are reported as image
+errors. Identical hashes share one lookup/upload per run. Existing images can be
+reused above the regular upload size limit. Progress and reports distinguish
+reused image URLs, actual uploads and failed URLs; cached aliases count as reused.
+Existing TIFF media is reusable even though the regular API cannot ingest new
+TIFFs. Each image failure is logged immediately with its URL and error reason.
 
 Project config is read from `https://admin.da.live/config/{source-org}/{da-site}` and rewritten into `editor.da` of the target site's `config.json`, using a property-only `POST` to `https://api.aem.live/{target-org}/sites/{hlx6-site}/config/editor/da.json`. Top-level properties starting with `:` (including `:properties`) are excluded. Each sheet is replaced by its own `data` array, preserving its name and row values except for same-site DA URL rewrites described below; sheet wrappers (`total`, `limit`, `offset`, `:colWidths`, etc.) are discarded. For example, `{ "data": { "data": [...] }, "alex": { "data": [...] } }` becomes `{ "data": [...], "alex": [...] }` under `editor.da`. Sheets without a data array are rejected. Other target settings are preserved. Missing DA config is skipped; identical target row arrays are resumable; unrelated differences in existing sheet rows are rejected. Previously migrated configs containing metadata, sheet wrappers or legacy URLs are converted only when their rows match the source after URL rewriting. Full-validation dry runs only read and report the planned config migration.
 
